@@ -124,8 +124,16 @@ pub enum Error {
 pub struct Chunk<const CHUNK_SIZE: usize>(
     [MaybeUninit<UnsafeCell<u8>>; CHUNK_SIZE]);
 
-/// Magic value put at the header of memory pipe structures
-const MEMPIPE_MAGIC: u64 = 0x91d021239b73bc57;
+/// Magic value put at the header of memory pipe structures. Changed whenever
+/// the sender/receiver protocol changes, so a sender and a receiver built
+/// from different versions refuse to connect ([`Error::PipeMismatch`]).
+/// Previous: `0x91d021239b73bc57` (`client_seq` started at 0 and receivers
+/// checked `client_owned` first).
+const MEMPIPE_MAGIC: u64 = 0x5e0f2b7c1d9a4863;
+
+/// Initial `client_seq` of every buffer. Sequence numbers and tickets both
+/// count up from 0, so a buffer that was never sent can't match a ticket.
+const NO_SEQ: u64 = u64::MAX;
 
 /// A memory pipe which uses `CHUNK_SIZE` byte chunks and `NUM_BUFFERS` for
 /// transferring memory between processes.
@@ -162,7 +170,8 @@ pub struct RawMemPipe<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize> {
     client_len: [AtomicUsize; NUM_BUFFERS],
 
     /// The sequence number for a given buffer, must be set prior to
-    /// `client_owned` and ordered correctly on the processor
+    /// `client_owned` and ordered correctly on the processor. Starts at
+    /// [`NO_SEQ`], which is never a ticket.
     client_seq: [AtomicU64; NUM_BUFFERS],
 
     /// Current sequence number, incremented by one to get a sequential ID to
@@ -304,7 +313,7 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
             addr_of_mut!((*mapped).client_len)
                 .write([const { AtomicUsize::new(0) }; NUM_BUFFERS]);
             addr_of_mut!((*mapped).client_seq)
-                .write([const { AtomicU64::new(0) }; NUM_BUFFERS]);
+                .write([const { AtomicU64::new(NO_SEQ) }; NUM_BUFFERS]);
             addr_of_mut!((*mapped).cur_seq).write(AtomicU64::new(0));
 
             // Chunks are left uninitialized, which is okay as they are marked
@@ -472,11 +481,12 @@ impl<'a, const CHUNK_SIZE: usize, const NUM_BUFFERS: usize> Drop for
 
         // Populate the length
         self.mem_pipe.client_len[self.idx].store(self.written,
-            Ordering::Relaxed);
+            Ordering::Release);
 
-        // Allocate a unique sequence ID for this buffer
+        // Allocate a unique sequence ID for this buffer. Receivers acquire
+        // this store before they look at `client_owned`, see `try_recv`
         let seq_id = self.mem_pipe.cur_seq.fetch_add(1, Ordering::Relaxed);
-        self.mem_pipe.client_seq[self.idx].store(seq_id, Ordering::Relaxed);
+        self.mem_pipe.client_seq[self.idx].store(seq_id, Ordering::Release);
 
         #[cfg(miri)]
         if let Some(hooks) = miri_hooks::HOOKS.get() {
@@ -639,8 +649,15 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
 
         // Look for a filled in buffer
         for ii in 0..NUM_BUFFERS {
-            // If it's not client owned, skip it
-            if !pipe.client_owned[ii].load(Ordering::Acquire) {
+            // Check the sequence before ownership. Sequence numbers are
+            // unique and only we can hand buffer `ii` back while it holds our
+            // sequence, so once it matches, the sender can't reuse the buffer
+            // and the next `client_owned == true` is the publication of our
+            // buffer. Checking ownership first would let a `true` from an
+            // older publication of this buffer pass, after which we could
+            // consume our buffer before it is published and have the
+            // sender's late `true` overwrite our acknowledgement.
+            if ticket.0 != pipe.client_seq[ii].load(Ordering::Acquire) {
                 continue;
             }
 
@@ -649,13 +666,13 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
                 (hooks.between_loads)(ticket.0);
             }
 
-            // It's client owned, make sure it's the sequence we expect
-            if ticket.0 != pipe.client_seq[ii].load(Ordering::Relaxed) {
+            // Our sequence, wait until it's published
+            if !pipe.client_owned[ii].load(Ordering::Acquire) {
                 continue;
             }
 
             // Got the sequence we wanted, get the length
-            let length = pipe.client_len[ii].load(Ordering::Relaxed);
+            let length = pipe.client_len[ii].load(Ordering::Acquire);
 
             // Get a slice to the data
             let data = unsafe {
