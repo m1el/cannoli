@@ -3,6 +3,9 @@ name = "mempipe"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+repro-hooks = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [target.'cfg(unix)'.dependencies]
@@ -10,3 +13,6 @@ libc = "*"
 rand = "*"
 errno = "*"
 
+[[example]]
+name = "stranded_buffer"
+required-features = ["repro-hooks"]

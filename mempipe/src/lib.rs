@@ -42,6 +42,22 @@ use core::mem::{MaybeUninit, size_of};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
 
+/// Optional scheduling points for the generation-reuse reproduction example.
+/// Available only when `repro-hooks` is enabled on Unix.
+#[cfg(all(feature = "repro-hooks", target_family = "unix"))]
+pub mod repro_hooks {
+    use std::sync::OnceLock;
+
+    pub struct Hooks {
+        /// Called after `try_recv` observes owned=true, before it reads seq.
+        pub after_owned_acquire: fn(u64),
+        /// Called after seq is written, before owned=true is published.
+        pub before_owned_publish: fn(u64),
+    }
+
+    pub static HOOKS: OnceLock<Hooks> = OnceLock::new();
+}
+
 #[cfg(target_family = "sushi_roll")]
 use alloc::alloc::{alloc, Layout};
 
@@ -425,6 +441,11 @@ impl<'a, const CHUNK_SIZE: usize, const NUM_BUFFERS: usize> Drop for
         let seq_id = self.mem_pipe.cur_seq.fetch_add(1, Ordering::Relaxed);
         self.mem_pipe.client_seq[self.idx].store(seq_id, Ordering::Relaxed);
 
+        #[cfg(all(feature = "repro-hooks", target_family = "unix"))]
+        if let Some(hooks) = repro_hooks::HOOKS.get() {
+            (hooks.before_owned_publish)(seq_id);
+        }
+
         // Flip ownership, using release semantics to make sure all writes have
         // become visible to the core we're sending to
         self.mem_pipe.client_owned[self.idx].store(true, Ordering::Release);
@@ -573,6 +594,11 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
             // If it's not client owned, skip it
             if !pipe.client_owned[ii].load(Ordering::Acquire) {
                 continue;
+            }
+
+            #[cfg(all(feature = "repro-hooks", target_family = "unix"))]
+            if let Some(hooks) = repro_hooks::HOOKS.get() {
+                (hooks.after_owned_acquire)(ticket.0);
             }
 
             // It's client owned, make sure it's the sequence we expect
