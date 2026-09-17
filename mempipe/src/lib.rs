@@ -26,7 +26,6 @@
 //! to them.
 
 #![cfg_attr(target_family = "sushi_roll", no_std)]
-#![feature(maybe_uninit_uninit_array)]
 #![feature(inline_const)]
 
 extern crate alloc;
@@ -42,17 +41,51 @@ use core::mem::{MaybeUninit, size_of};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
 
+/// Delay points for driving specific interleavings under Miri, see
+/// `tests/miri_delayed.rs`. Set [`miri_hooks::HOOKS`] before spawning threads.
+#[cfg(miri)]
+pub mod miri_hooks {
+    use std::sync::OnceLock;
+
+    pub struct Hooks {
+        /// Called in `try_recv` between the two loads that decide whether a
+        /// buffer is ours to consume
+        pub between_loads: fn(ticket: u64),
+
+        /// Called in `ChunkWriter::drop` after the sequence is stored and
+        /// before `client_owned` is set
+        pub before_owned_publish: fn(seq: u64),
+    }
+
+    pub static HOOKS: OnceLock<Hooks> = OnceLock::new();
+}
+
+/// Miri can't `shm_open`, so under Miri pipes live on the heap and
+/// [`RecvPipe::open`] finds them here by `uid`
+#[cfg(miri)]
+mod miri_registry {
+    use std::sync::Mutex;
+
+    pub struct PipePtr(pub *mut u8);
+    unsafe impl Send for PipePtr {}
+
+    pub static PIPES: Mutex<Vec<PipePtr>> = Mutex::new(Vec::new());
+}
+
 #[cfg(target_family = "sushi_roll")]
 use alloc::alloc::{alloc, Layout};
 
-#[cfg(target_family = "unix")]
+#[cfg(all(target_family = "unix", not(miri)))]
 use core::mem::size_of_val;
 
-#[cfg(target_family = "unix")]
+#[cfg(all(target_family = "unix", not(miri)))]
 use alloc::format;
 
 #[cfg(target_family = "unix")]
-use alloc::ffi::{CString, NulError};
+use alloc::ffi::NulError;
+
+#[cfg(all(target_family = "unix", not(miri)))]
+use alloc::ffi::CString;
 
 /// A wrapper around the [`Error`] type
 type Result<T> = core::result::Result<T, Error>;
@@ -151,14 +184,14 @@ pub struct SendPipe<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize> {
 }
 
 /// Get the filename for a given `uid`
-#[cfg(target_family = "unix")]
+#[cfg(all(target_family = "unix", not(miri)))]
 fn filename_from_uid(uid: u64) -> Result<CString> {
     // Create a [`CString`] of the name to hexlify and null-terminate it
     CString::new(format!("cannoli_{:016x}", uid)).map_err(Error::CString)
 }
 
 /// Get the current `errno` and convert it into a [`std::io::Error`]
-#[cfg(target_family = "unix")]
+#[cfg(all(target_family = "unix", not(miri)))]
 fn errno() -> std::io::Error {
     std::io::Error::from_raw_os_error(errno::errno().0)
 }
@@ -172,7 +205,21 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
             return Err(Error::InvalidPipeConfiguration);
         }
 
-        #[cfg(target_family = "unix")]
+        #[cfg(miri)]
+        let (mapped, uid) = {
+            let buf = unsafe {
+                std::alloc::alloc(std::alloc::Layout::new::<
+                    RawMemPipe<CHUNK_SIZE, NUM_BUFFERS>>())
+            };
+            assert!(!buf.is_null(), "Failed to allocate memory pipe");
+
+            let mut pipes = miri_registry::PIPES.lock().unwrap();
+            let uid = pipes.len() as u64;
+            pipes.push(miri_registry::PipePtr(buf));
+            (buf as *mut RawMemPipe<CHUNK_SIZE, NUM_BUFFERS>, uid)
+        };
+
+        #[cfg(all(target_family = "unix", not(miri)))]
         let (mapped, uid) = {
             // Generate a random name
             let uid = rand::random::<u64>();
@@ -320,7 +367,13 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
 
 impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
         Drop for SendPipe<CHUNK_SIZE, NUM_BUFFERS> {
-    #[cfg(target_family = "unix")]
+    #[cfg(miri)]
+    fn drop(&mut self) {
+        // Leaked, receivers may still point at it. Run with
+        // `-Zmiri-ignore-leaks`
+    }
+
+    #[cfg(all(target_family = "unix", not(miri)))]
     fn drop(&mut self) {
         unsafe {
             // Delete the file we created
@@ -425,6 +478,11 @@ impl<'a, const CHUNK_SIZE: usize, const NUM_BUFFERS: usize> Drop for
         let seq_id = self.mem_pipe.cur_seq.fetch_add(1, Ordering::Relaxed);
         self.mem_pipe.client_seq[self.idx].store(seq_id, Ordering::Relaxed);
 
+        #[cfg(miri)]
+        if let Some(hooks) = miri_hooks::HOOKS.get() {
+            (hooks.before_owned_publish)(seq_id);
+        }
+
         // Flip ownership, using release semantics to make sure all writes have
         // become visible to the core we're sending to
         self.mem_pipe.client_owned[self.idx].store(true, Ordering::Release);
@@ -460,7 +518,18 @@ unsafe impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize> Sync for
 impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
         RecvPipe<CHUNK_SIZE, NUM_BUFFERS> {
     /// Open a pipe with the given `uid`
-    #[cfg(target_family = "unix")]
+    #[cfg(miri)]
+    pub fn open(uid: u64) -> Result<Self> {
+        let pipes = miri_registry::PIPES.lock().unwrap();
+        let mapped = pipes.get(uid as usize).ok_or(Error::PipeMismatch)?.0;
+        Ok(RecvPipe {
+            mem_pipe: mapped as *const RawMemPipe<CHUNK_SIZE, NUM_BUFFERS>,
+            seq:      AtomicU64::new(0),
+        })
+    }
+
+    /// Open a pipe with the given `uid`
+    #[cfg(all(target_family = "unix", not(miri)))]
     pub fn open(uid: u64) -> Result<Self> {
         // Make sure settings are sane
         if NUM_BUFFERS == 0 || CHUNK_SIZE == 0 {
@@ -575,6 +644,11 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
                 continue;
             }
 
+            #[cfg(miri)]
+            if let Some(hooks) = miri_hooks::HOOKS.get() {
+                (hooks.between_loads)(ticket.0);
+            }
+
             // It's client owned, make sure it's the sequence we expect
             if ticket.0 != pipe.client_seq[ii].load(Ordering::Relaxed) {
                 continue;
@@ -615,7 +689,10 @@ impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
 
 impl<const CHUNK_SIZE: usize, const NUM_BUFFERS: usize>
         Drop for RecvPipe<CHUNK_SIZE, NUM_BUFFERS> {
-    #[cfg(target_family = "unix")]
+    #[cfg(miri)]
+    fn drop(&mut self) {}
+
+    #[cfg(all(target_family = "unix", not(miri)))]
     fn drop(&mut self) {
         // Delete our file
         // Unmap the memory we mapped
