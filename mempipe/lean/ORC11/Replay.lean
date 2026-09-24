@@ -1168,6 +1168,187 @@ theorem Exec.sim_update {A : Loc → Prop} (hA : G.LabDisc A) {k : ℕ}
 
 end Events
 
+/-! ## Choices -/
+
+/-- The next item of a thread can be run. -/
+theorem Sim.next_step {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G k pre c) {π : ι} {x : Item} (hnext : pre π ++ [x] <+: G.items π) :
+    ∃ s', stepItem (prog π) G.lab (c.th π).1 x = some s' := by
+  obtain ⟨t, ht⟩ := hnext
+  have hrun := G.run π
+  rw [← ht, List.append_assoc, runItems_append, hs.state π] at hrun
+  simp only [Option.bind_some, List.singleton_append] at hrun
+  obtain ⟨s1, h1, -⟩ := runItems_cons_of hrun
+  exact ⟨s1, h1⟩
+
+/-- Running a choice keeps the simulation. -/
+theorem Sim.choice {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G k pre c) {π : ι} {b : Bool} (hnext : pre π ++ [.inr b] <+: G.items π) :
+    ∃ c', Step prog c c' ∧ Sim G k (Function.update pre π (pre π ++ [.inr b])) c' := by
+  obtain ⟨s', hstep⟩ := hs.next_step hnext
+  obtain ⟨kk, hp, rfl⟩ := stepItem_choose_inv hstep
+  have hts := TStep.choose_at (M := c.mem) (𝓝 := c.na) (𝓥 := (c.th π).2) hp b
+  refine ⟨_, .mk c π hts, ?_⟩
+  exact
+  { prefix_ := fun π' => by
+      by_cases h : π' = π
+      · subst h; simpa using hnext
+      · simpa [Function.update_of_ne h] using hs.prefix_ π'
+    state := fun π' => by
+      by_cases h : π' = π
+      · subst h; simpa using runItems_snoc (hs.state π') hstep
+      · simpa [Function.update_of_ne h] using hs.state π'
+    evs := fun π' => by
+      by_cases h : π' = π
+      · subst h
+        simp only [Function.update_self, List.filterMap_append, List.filterMap_cons,
+          Sum.getLeft?_inr, List.filterMap_nil, List.append_nil]
+        exact hs.evs π'
+      · simpa [Function.update_of_ne h] using hs.evs π'
+    cur := fun π' => by
+      by_cases h : π' = π
+      · subst h; simpa using hs.cur π'
+      · simpa [Function.update_of_ne h] using hs.cur π'
+    rel := fun π' => by
+      by_cases h : π' = π
+      · subst h; simpa using hs.rel π'
+      · simpa [Function.update_of_ne h] using hs.rel π'
+    memOld := hs.memOld
+    memInit := hs.memInit
+    memNew := hs.memNew
+    naW := hs.naW
+    naR := hs.naR
+    ids := hs.ids }
+
+/-- Running a sequence of choices of one thread. -/
+theorem Sim.choices {k : ℕ} {π : ι} : ∀ (cs : List Item), (∀ x ∈ cs, ∃ b, x = .inr b) →
+    ∀ {pre : (i : ι) → List Item} {c : Config ι S Loc Val}, Sim G k pre c →
+      Reachable prog s0 v0 c → pre π ++ cs <+: G.items π →
+      ∃ c', Reachable prog s0 v0 c' ∧ Sim G k (Function.update pre π (pre π ++ cs)) c'
+  | [], _, pre, c, hs, hr, _ => ⟨c, hr, by simpa using hs⟩
+  | x :: cs, hcs, pre, c, hs, hr, hpre => by
+    obtain ⟨b, rfl⟩ := hcs x List.mem_cons_self
+    obtain ⟨c1, hs1, hsim1⟩ := hs.choice (π := π) (b := b)
+      ((List.prefix_append _ _).trans (by simpa using hpre))
+    obtain ⟨c2, hr2, hsim2⟩ := Sim.choices (π := π) cs (fun y hy => hcs y (List.mem_cons_of_mem _ hy))
+      hsim1 (hr.tail hs1) (by simpa using hpre)
+    exact ⟨c2, hr2, by simpa using hsim2⟩
+
+/-- The items of a thread not run yet, when all events below `k` are. -/
+theorem Sim.rest {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G k pre c) (hkn : k ≤ G.n) (π : ι) :
+    ∃ rest, G.items π = pre π ++ rest ∧ rest.filterMap Sum.getLeft? =
+      ((List.range (G.n - k)).map (fun x => k + x)).filter (fun e => G.tid e = π) := by
+  obtain ⟨rest, hrest⟩ := hs.prefix_ π
+  refine ⟨rest, hrest.symm, ?_⟩
+  have h := G.itemsEv π
+  rw [← hrest, List.filterMap_append, hs.evs π] at h
+  have hn : G.n = k + (G.n - k) := by omega
+  rw [hn, List.range_add, List.filter_append] at h
+  simpa [Nat.add_sub_cancel_left] using List.append_cancel_left h
+
+/-! ## The replay -/
+
+/-- Replaying the events below `k`: either ORC11 hits a race, or the events so
+far are race-free and simulated. -/
+theorem Exec.replay_upto (hc : G.Consistent) {A : Loc → Prop} (hd : Disciplined prog A) :
+    ∀ k ≤ G.n, (∃ c, Reachable prog s0 v0 c ∧ ORC11.Racy prog c) ∨
+      (∃ c pre, Reachable prog s0 v0 c ∧ Sim G k pre c ∧ G.RaceFree k)
+  | 0, _ => Or.inr ⟨_, _, .refl, sim_init, raceFree_zero⟩
+  | k + 1, hk => by
+    rcases Exec.replay_upto hc hd k (by omega) with h | ⟨c, pre, hr, hs, hrf⟩
+    · exact Or.inl h
+    have hkn : k < G.n := by omega
+    have hA := G.labDisc hd
+    -- run the choices of `k`'s thread before `k`
+    obtain ⟨rest, hrest, hrestEv⟩ := hs.rest (by omega) (G.tid k)
+    have hfirst : rest.filterMap Sum.getLeft? = k :: ((List.range (G.n - (k + 1))).map
+        (fun x => k + 1 + x)).filter (fun e => G.tid e = G.tid k) := by
+      rw [hrestEv]
+      have : G.n - k = (G.n - (k + 1)) + 1 := by omega
+      rw [this, List.range_succ_eq_map]
+      simp [List.filter_cons, Function.comp_def, Nat.add_assoc, Nat.add_comm 1]
+    obtain ⟨cs, rest', hsplit, hcs, -⟩ := split_first_event hfirst
+    obtain ⟨c1, hr1, hs1⟩ := hs.choices (π := G.tid k) cs hcs hr
+      (by rw [hrest, hsplit, ← List.append_assoc]; exact List.prefix_append _ _)
+    set pre1 := Function.update pre (G.tid k) (pre (G.tid k) ++ cs) with hpre1
+    have hnext : pre1 (G.tid k) ++ [Sum.inl k] <+: G.items (G.tid k) := by
+      rw [hpre1, Function.update_self, hrest, hsplit]
+      exact ⟨rest', by simp⟩
+    obtain ⟨s', hstep⟩ := hs1.next_step hnext
+    by_cases hok : (prog (G.tid k) (c1.th (G.tid k)).1).DrfPreOk c1.na (c1.th (G.tid k)).2 c1.mem
+    swap
+    · exact Or.inl ⟨c1, hr1, G.tid k, hok⟩
+    right
+    cases hlab : G.lab k with
+    | R l o v =>
+      obtain ⟨kk, hp, -⟩ := stepItem_read_inv hstep hlab
+      rw [hp] at hok
+      have hrf1 := G.raceFree_succ hc hA hrf hkn hs1 (by rw [hlab]; exact hok)
+      obtain ⟨c2, hs2, hsim2⟩ := G.sim_read hc hr1 hs1 hkn hnext hstep hlab hok
+      exact ⟨c2, _, hr1.tail hs2, hsim2, hrf1⟩
+    | W l o v =>
+      have hp := stepItem_write_inv hstep hlab
+      rw [hp] at hok
+      have hrf1 := G.raceFree_succ hc hA hrf hkn hs1 (by rw [hlab]; exact hok)
+      obtain ⟨c2, hs2, hsim2⟩ := G.sim_write hc hr1 hs1 hrf1 hkn hnext hstep hlab hok
+      exact ⟨c2, _, hr1.tail hs2, hsim2, hrf1⟩
+    | U l or ow vr vw =>
+      obtain ⟨f, kk, hp, -, -⟩ := stepItem_update_inv hstep hlab
+      rw [hp] at hok
+      have hrf1 := G.raceFree_succ hc hA hrf hkn hs1 (by rw [hlab]; exact hok)
+      obtain ⟨c2, hs2, hsim2⟩ := G.sim_update hc hA hr1 hs1 hkn hnext hstep hlab hok
+      exact ⟨c2, _, hr1.tail hs2, hsim2, hrf1⟩
+
+/-- Finishing every thread's remaining choices after all events. -/
+theorem Exec.finish {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G G.n pre c) (hr : Reachable prog s0 v0 c) :
+    ∀ T : Finset ι, ∃ c' pre', Reachable prog s0 v0 c' ∧ Sim G G.n pre' c' ∧
+      ∀ π ∈ T, pre' π = G.items π := by
+  intro T
+  induction T using Finset.induction_on with
+  | empty => exact ⟨c, pre, hr, hs, fun π h => absurd h (Finset.notMem_empty π)⟩
+  | insert π T hπ ih =>
+    obtain ⟨c1, pre1, hr1, hs1, hT⟩ := ih
+    obtain ⟨rest, hrest, hrestEv⟩ := hs1.rest le_rfl π
+    have hnil : rest.filterMap Sum.getLeft? = [] := by simpa using hrestEv
+    obtain ⟨c2, hr2, hs2⟩ := hs1.choices (π := π) rest (all_choices_of_filterMap_nil hnil) hr1
+      (by rw [hrest])
+    refine ⟨c2, _, hr2, hs2, fun π' hπ' => ?_⟩
+    by_cases h : π' = π
+    · subst h; simpa using hrest.symm
+    · rw [Function.update_of_ne h]
+      exact hT π' (by simpa [h] using hπ')
+
+/-- **RC11 ⇒ ORC11.** For a location-disciplined pool, every RC11-consistent
+execution graph either leads ORC11 to a race, or is race-free and is an ORC11
+run: some reachable configuration has exactly the graph's final local states. -/
+theorem Exec.replay (hc : G.Consistent) {A : Loc → Prop} (hd : Disciplined prog A) :
+    (∃ c, Reachable prog s0 v0 c ∧ ORC11.Racy prog c) ∨
+      (¬ G.Racy ∧ ∃ c, Reachable prog s0 v0 c ∧ ∀ π, (c.th π).1 = G.final π) := by
+  rcases Exec.replay_upto hc hd G.n le_rfl with h | ⟨c, pre, hr, hs, hrf⟩
+  · exact Or.inl h
+  right
+  refine ⟨fun ⟨a, b, hab⟩ => hrf a b hab ?_ ?_, ?_⟩
+  · obtain ⟨⟨ha, -⟩, -⟩ := hab
+    cases a with
+    | init => trivial
+    | ev e => exact ha
+  · obtain ⟨⟨-, hb, -⟩, -⟩ := hab
+    cases b with
+    | init => trivial
+    | ev e => exact hb
+  obtain ⟨c', pre', hr', hs', hall⟩ := Exec.finish hs hr G.active
+  refine ⟨c', hr', fun π => ?_⟩
+  have hπ : pre' π = G.items π := by
+    by_cases h : π ∈ G.active
+    · exact hall π h
+    · rw [G.inactive π h]
+      exact List.prefix_nil.1 (G.inactive π h ▸ hs'.prefix_ π)
+  have := hs'.state π
+  rw [hπ, G.run π] at this
+  exact (Option.some.inj this).symm
+
 end RC11
 
 end ORC11
