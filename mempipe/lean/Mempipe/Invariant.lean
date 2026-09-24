@@ -155,7 +155,6 @@ def sentLog : ℕ → List Entry
 
 /-! ## Memory predicates -/
 
-def IsLatest (C : List MsgT) (m : MsgT) : Prop := m ∈ C ∧ ∀ m' ∈ C, m'.time ≤ m.time
 
 /-- Every message of the cell is at most `t`. -/
 def Below (C : List MsgT) (t : ℕ) : Prop := ∀ m ∈ C, m.time ≤ t
@@ -289,10 +288,10 @@ theorem latestIs_cons_new {m : MsgT} {C : List MsgT} {t : ℕ} {v : ℤ} (h : Be
     (ht : t < m.time) (hv : m.val = some v) : LatestIs (m :: C) v :=
   ⟨m, isLatest_cons_new h ht, hv⟩
 
-theorem IsLatest.below {C : List MsgT} {m : MsgT} (h : IsLatest C m) : Below C m.time := h.2
+theorem _root_.ORC11.IsLatest.below {C : List MsgT} {m : MsgT} (h : IsLatest C m) : Below C m.time := h.2
 
 /-- A message at least as late as the latest one is the latest one. -/
-theorem IsLatest.eq_of_le {C : List MsgT} {m m' : MsgT}
+theorem _root_.ORC11.IsLatest.eq_of_le {C : List MsgT} {m m' : MsgT}
     (uniq : ∀ a ∈ C, ∀ b ∈ C, a.time = b.time → a = b)
     (h : IsLatest C m) (hm' : m' ∈ C) (ht : m.time ≤ m'.time) : m' = m :=
   uniq m' hm' m h.1 (le_antisymm (h.2 m' hm') ht)

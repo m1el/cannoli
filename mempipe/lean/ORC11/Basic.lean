@@ -204,4 +204,8 @@ time at its own location. -/
 def Msg.Wf {Loc Val : Type} (l : Loc) (m : Msg Loc Val) : Prop :=
   ∀ V, m.view = some V → (V l).w = m.time
 
+/-- `m` is the latest message of cell `C`. -/
+def IsLatest {Loc Val : Type} (C : List (Msg Loc Val)) (m : Msg Loc Val) : Prop :=
+  m ∈ C ∧ ∀ m' ∈ C, m'.time ≤ m.time
+
 end ORC11
