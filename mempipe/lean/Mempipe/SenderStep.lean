@@ -38,11 +38,12 @@ theorem Frame.sender {c : Cfg ρ} {σ : SState} {𝓥 : TView Loc} {M' : Mem} {�
   npub := by simpa using hnpub
   cons v h := by simpa using h
   on r h := by simp
+  stay r h := by simp
 
 theorem PhaseOK.sender_frame {c : Cfg ρ} {σ : SState} {𝓥 : TView Loc} {M' : Mem}
     {𝓝' : View Loc} {i : ℕ} {ph : Phase} (h : PhaseOK pay ln c i ph)
     (F : Frame c (c.setS σ 𝓥 M' 𝓝') i) : PhaseOK pay ln (c.setS σ 𝓥 M' 𝓝') i ph :=
-  h.frame pay ln F (fun _ _ r hr => by simpa using hr)
+  h.frame pay ln F (fun _ _ r hr => by simpa using hr) (fun _ _ hc => by simpa using hc)
 
 /-- Sender steps that do not write memory and keep the sender among
 non-publishing states. -/
@@ -667,7 +668,7 @@ theorem inv_s_pub {c : Cfg ρ} (h : Inv pay ln c) {k : ℕ} {b : Bool} {j : ℕ}
     | .sealing, hphj' =>
       obtain ⟨-, hnr, hnl, hna, hc1, hc2, o, ho, hov, hot⟩ := hphj'
       refine ⟨.pub k, by simp [k3], by simp [k4], by simp [k1], ?_, ?_, o, q, ?_, hov,
-        by simpa using hot.trans (hv _).1, ?_, hqval, ?_, ?_, ?_, ?_, ?_, ?_⟩
+        by simpa using hot.trans (hv _).1, ?_, hqval, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
       · simpa [hmem, hpc, SPc.k] using hc1
       · simpa [hmem, hpc, SPc.k] using hc2
       · simpa [hmem] using ho
@@ -687,6 +688,12 @@ theorem inv_s_pub {c : Cfg ρ} (h : Inv pay ln c) {k : ℕ} {b : Bool} {j : ℕ}
       · intro id hid
         simp only [Cfg.setS_na, hnaC] at hid
         exact Or.inl ((hv _).2.2.1 (hna hid))
+      · -- the new sequence number is not consumed yet
+        intro hc
+        obtain ⟨r, hr⟩ := (consumed_setS).1 hc
+        obtain ⟨e, he, he1⟩ := List.mem_map.1 hr
+        have := (h.rLog r e he).2.1
+        rw [he1, hnp] at this; omega
   · obtain ⟨ph, hph⟩ := h.phase i
     refine ⟨ph, hph.sender_frame pay ln (Frame.sender ?_ ?_ ?_ ?_ ?_ hv ?_ ?_ ?_ ?_)⟩
     · simp [hmem]

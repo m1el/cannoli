@@ -31,11 +31,13 @@ structure Frame0 (c c' : Cfg ρ) (i : ℕ) : Prop where
 structure Frame (c c' : Cfg ρ) (i : ℕ) : Prop extends Frame0 c c' i where
   na : (c'.na (.chunk i)).nr = (c.na (.chunk i)).nr
   on : ∀ r, (c'.r r).pc.onBuf = some i → (c'.r r).pc = (c.r r).pc
+  stay : ∀ r, (c.r r).pc.onBuf = some i → (c'.r r).pc = (c.r r).pc
 
 theorem PhaseOK.frame {c c' : Cfg ρ} {i : ℕ} {ph : Phase}
     (h : PhaseOK pay ln c i ph) (F : Frame c c' i)
     (htk : ∀ s, ph = .pub s → ∀ r, (c.r r).pc.ticket = some (s : ℤ) →
-      (c'.r r).pc.ticket = some (s : ℤ)) :
+      (c'.r r).pc.ticket = some (s : ℤ))
+    (hcons : ∀ s, ph = .pub s → Consumed c' (s : ℤ) → Consumed c (s : ℤ)) :
     PhaseOK pay ln c' i ph := by
   have noRecv : NoRecv c i → NoRecv c' i := fun h r hr => h r (F.on r hr ▸ hr)
   have noLive : NoLive c i → NoLive c' i := fun h m hm v hv => by
@@ -71,10 +73,11 @@ theorem PhaseOK.frame {c c' : Cfg ρ} {i : ℕ} {ph : Phase}
     · rw [F.len, hpc]; exact hc2
   | pub s =>
     obtain ⟨hf, hs, hnp, hc1, hc2, o, q, ho, hov, hot, hq, hqv, hqc, hql, hqo, hq4, hrecv,
-      hnr⟩ := h
+      hnr, hrel⟩ := h
     refine ⟨fun h' => hf (F.fill.1 h'), fun h' => hs (F.sealing.1 h'),
       lt_of_lt_of_le hnp F.npub, F.chunk ▸ hc1, F.len ▸ hc2, o, q, F.own ▸ ho, hov,
-      hot.trans (F.vs _).1, F.cseq ▸ hq, hqv, F.chunk ▸ hqc, F.len ▸ hql, hqo, ?_, ?_, ?_⟩
+      hot.trans (F.vs _).1, F.cseq ▸ hq, hqv, F.chunk ▸ hqc, F.len ▸ hql, hqo, ?_, ?_, ?_,
+      ?_⟩
     · intro m hm v hv
       rw [F.cseq] at hm
       rcases hq4 m hm v hv with h1 | h1 | h1
@@ -93,6 +96,9 @@ theorem PhaseOK.frame {c c' : Cfg ρ} {i : ℕ} {ph : Phase}
       rcases hnr id hid with h1 | ⟨r, hr1, hr2⟩
       · exact Or.inl ((F.vs _).2.2.1 h1)
       · exact Or.inr ⟨r, htk s rfl r hr1, (F.vr r _).2.2.1 hr2⟩
+    · intro hc
+      obtain ⟨r, hr⟩ := hrel (hcons s rfl hc)
+      exact ⟨r, by rw [F.stay r (by simp [hr, RPc.onBuf]), hr]⟩
 
 /-- A variant for the published phase, for steps of the receiver working on
 the buffer: receivers may change state on the buffer if they keep its facts,
@@ -104,13 +110,15 @@ theorem PhaseOK.pub_frame {c c' : Cfg ρ} {i s : ℕ}
       ∀ r, (c'.r r).pc.onBuf = some i →
         (c'.r r).pc = (c.r r).pc ∨ RecvOK pay ln c' i s o r)
     (hna : ∀ id ∈ (c'.na (.chunk i)).nr, id ∈ (c.na (.chunk i)).nr ∨
-      ∃ r, (c'.r r).pc.ticket = some (s : ℤ) ∧ id ∈ (c'.vr r (.chunk i)).nr) :
+      ∃ r, (c'.r r).pc.ticket = some (s : ℤ) ∧ id ∈ (c'.vr r (.chunk i)).nr)
+    (hrel : Consumed c' (s : ℤ) → ∃ r, (c'.r r).pc = .rel (s : ℤ) i) :
     PhaseOK pay ln c' i (.pub s) := by
   obtain ⟨hf, hs, hnp, hc1, hc2, o, q, ho, hov, hot, hq, hqv, hqc, hql, hqo, hq4, hrecv,
-    hnr⟩ := h
+    hnr, -⟩ := h
   refine ⟨fun h' => hf (F.fill.1 h'), fun h' => hs (F.sealing.1 h'),
     lt_of_lt_of_le hnp F.npub, F.chunk ▸ hc1, F.len ▸ hc2, o, q, F.own ▸ ho, hov,
-    hot.trans (F.vs _).1, F.cseq ▸ hq, hqv, F.chunk ▸ hqc, F.len ▸ hql, hqo, ?_, ?_, ?_⟩
+    hot.trans (F.vs _).1, F.cseq ▸ hq, hqv, F.chunk ▸ hqc, F.len ▸ hql, hqo, ?_, ?_, ?_,
+    hrel⟩
   · intro m hm v hv
     rw [F.cseq] at hm
     rcases hq4 m hm v hv with h1 | h1 | h1

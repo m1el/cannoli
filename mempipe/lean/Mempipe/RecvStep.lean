@@ -44,7 +44,8 @@ theorem Frame.recv {c : Cfg ρ} {r0 : ρ} {σ : RState} {𝓥 : TView Loc} {M' :
     (hcseq : M' (.cseq i) = c.mem (.cseq i)) (hchunk : M' (.chunk i) = c.mem (.chunk i))
     (hna : (𝓝' (.chunk i)).nr = (c.na (.chunk i)).nr) (hv : c.vr r0 ≤ 𝓥.cur)
     (hlog : ∀ e ∈ (c.r r0).log, e ∈ σ.log)
-    (hon : σ.pc.onBuf = some i → σ.pc = (c.r r0).pc) :
+    (hon : σ.pc.onBuf = some i → σ.pc = (c.r r0).pc)
+    (hstay : (c.r r0).pc.onBuf = some i → σ.pc = (c.r r0).pc) :
     Frame c (c.setR r0 σ 𝓥 M' 𝓝') i where
   own := by simpa using hown
   len := by simpa using hlen
@@ -65,17 +66,34 @@ theorem Frame.recv {c : Cfg ρ} {r0 : ρ} {σ : RState} {𝓥 : TView Loc} {M' :
     rw [setR_r] at h ⊢; split_ifs at h ⊢ with hr
     · subst hr; exact hon h
     · rfl
+  stay r h := by
+    rw [setR_r]; split_ifs with hr
+    · subst hr; exact hstay h
+    · rfl
 
 theorem PhaseOK.recv_frame {c : Cfg ρ} {r0 : ρ} {σ : RState} {𝓥 : TView Loc} {M' : Mem}
     {𝓝' : View Loc} {i : ℕ} {ph : Phase} (h : PhaseOK pay ln c i ph)
     (F : Frame c (c.setR r0 σ 𝓥 M' 𝓝') i)
     (htk : ∀ s, ph = .pub s → (c.r r0).pc.ticket = some (s : ℤ) →
-      σ.pc.ticket = some (s : ℤ)) :
+      σ.pc.ticket = some (s : ℤ))
+    (hcons : ∀ s, ph = .pub s → Consumed (c.setR r0 σ 𝓥 M' 𝓝') (s : ℤ) → Consumed c (s : ℤ)) :
     PhaseOK pay ln (c.setR r0 σ 𝓥 M' 𝓝') i ph :=
   h.frame pay ln F (fun s hs r hr => by
     rw [setR_r]; split_ifs with h
     · subst h; exact htk s hs hr
-    · exact hr)
+    · exact hr) hcons
+
+/-- With an unchanged log, consumption is unchanged. -/
+theorem consumed_setR_same {c : Cfg ρ} {r0 : ρ} {σ : RState} {𝓥 : TView Loc} {M' : Mem}
+    {𝓝' : View Loc} (hlog : σ.log = (c.r r0).log) {v : ℤ} :
+    Consumed (c.setR r0 σ 𝓥 M' 𝓝') v ↔ Consumed c v := by
+  constructor
+  · rintro ⟨r, hr⟩
+    refine ⟨r, ?_⟩
+    rw [setR_r] at hr; split_ifs at hr with h
+    · subst h; rwa [hlog] at hr
+    · exact hr
+  · exact consumed_setR (fun e he => hlog ▸ he)
 
 /-- Receiver steps that do not write memory. -/
 theorem Inv.recv_noWrite {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {σ : RState}
@@ -248,7 +266,7 @@ theorem inv_r_scan {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
     by_cases hij : i = j
     · subst hij
       refine ⟨.pub s, hphj.pub_frame pay ln (Frame0.recv rfl rfl rfl rfl hv (fun e he => he))
-        ?_ ?_ ?_⟩
+        ?_ ?_ ?_ ?_⟩
       · intro r hr
         rw [setR_r]; split_ifs with h1
         · subst h1; simpa [hpc, RPc.ticket] using hr
@@ -269,10 +287,12 @@ theorem inv_r_scan {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
           · rw [setR_vr, if_pos rfl]; simpa using hql.mono (hacq _).1
         · exact Or.inl rfl
       · intro id hid; left; simpa [hnaC] using hid
+      · intro hc; exact absurd ((consumed_setR_same (by rfl)).1 hc) hnc
     · obtain ⟨ph, hph⟩ := h.phase i
       refine ⟨ph, hph.recv_frame pay ln (Frame.recv rfl rfl rfl rfl (by simp) hv
-        (fun e he => he) ?_) ?_⟩
+        (fun e he => he) ?_ ?_) ?_ (fun s' _ hc => (consumed_setR_same (by rfl)).1 hc)⟩
       · intro h1; simp [RPc.onBuf] at h1; exact absurd h1.symm hij
+      · intro h1; simp [hpc, RPc.onBuf] at h1
       · intro s' _ h1; simpa [hpc, RPc.ticket] using h1
   · -- no match: move on
     simp only [hvt, ↓reduceIte] at hσ
@@ -283,8 +303,9 @@ theorem inv_r_scan {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
       c3 (fun e he => h.rLog r0 e he) (fun i => ?_)
     obtain ⟨ph, hph⟩ := h.phase i
     refine ⟨ph, hph.recv_frame pay ln (Frame.recv rfl rfl rfl rfl (by simp) hv
-      (fun e he => he) ?_) ?_⟩
+      (fun e he => he) ?_ ?_) ?_ (fun s' _ hc => (consumed_setR_same (by rfl)).1 hc)⟩
     · intro h1; simp [RPc.onBuf] at h1
+    · intro h1; simp [hpc, RPc.onBuf] at h1
     · intro s' _ h1; simpa [hpc, RPc.ticket] using h1
 
 /-! ## Steps on the receiver's buffer -/
@@ -308,12 +329,17 @@ theorem Inv.recv_onBuf {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {j s : ℕ} {o 
     (hfault : σ.pc ≠ .fault) (hrel : ∀ t i, σ.pc = .rel t i → t ∈ σ.log.map Prod.fst)
     (htix : tix σ = tix (c.r r0))
     (hrlog : ∀ e ∈ σ.log, 0 ≤ e.1 ∧ e.1 < c.s.pc.npub ∧ e.2.1 = pay e.1.toNat ∧
-      e.2.2 = ln e.1.toNat) :
+      e.2.2 = ln e.1.toNat)
+    (hon0 : (c.r r0).pc.onBuf = some j)
+    (hconsO : ∀ v, Consumed (c.setR r0 σ 𝓥 c.mem 𝓝') v → Consumed c v ∨ v = s)
+    (hrelc : Consumed (c.setR r0 σ 𝓥 c.mem 𝓝') (s : ℤ) →
+      ∃ r, ((c.setR r0 σ 𝓥 c.mem 𝓝').r r).pc = .rel (s : ℤ) j) :
     Inv pay ln (c.setR r0 σ 𝓥 c.mem 𝓝') := by
   refine h.recv_noWrite pay ln hg hnaC hnaA hfault hrel htix hrlog (fun i => ?_)
   by_cases hij : i = j
   · subst hij
-    refine ⟨.pub s, hphj.pub_frame pay ln (Frame0.recv rfl rfl rfl rfl hv hlog) ?_ ?_ ?_⟩
+    refine ⟨.pub s, hphj.pub_frame pay ln (Frame0.recv rfl rfl rfl rfl hv hlog) ?_ ?_ ?_
+      hrelc⟩
     · intro r hr
       rw [setR_r]; split_ifs with h1
       · exact htk
@@ -329,9 +355,20 @@ theorem Inv.recv_onBuf {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {j s : ℕ} {o 
       · exact Or.inr ⟨r0, by simpa using htk, by simpa using h1⟩
   · obtain ⟨ph, hph⟩ := h.phase i
     refine ⟨ph, hph.recv_frame pay ln (Frame.recv rfl rfl rfl rfl (by rw [hnaCi i hij]) hv hlog
-      ?_) ?_⟩
+      ?_ ?_) ?_ ?_⟩
     · intro h1; exact absurd (hon i h1) hij
+    · intro h1; rw [hon0, Option.some.injEq] at h1; exact absurd h1.symm hij
     · intro s' _ h1; rw [htk0] at h1; rw [htk, h1]
+    · -- the one sequence number consumed now is not the one of buffer `i`
+      intro s' hs' hc
+      rcases hconsO _ hc with h1 | h1
+      · exact h1
+      · subst hs'
+        obtain ⟨-, -, -, -, -, -, qi, -, -, -, hqi, hqiv, -⟩ := hph
+        obtain ⟨-, -, -, -, -, -, qj, -, -, -, hqj, hqjv, -⟩ := hphj
+        have := h.cseqUniq i j qi hqi.1 qj hqj.1 _ hqiv (by rw [hqjv, h1])
+          (by rw [NO_SEQ]; omega)
+        exact absurd this hij
 
 /-- The data of the receiver working on a buffer. -/
 theorem Inv.onBuf' {c : Cfg ρ} (h : Inv pay ln c) {r : ρ} {t : ℤ} {i : ℕ}
@@ -372,6 +409,9 @@ theorem inv_r_own {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
     (by simp [RPc.ticket]) (fun e he => he) (fun i hi => by simpa [RPc.onBuf] using hi.symm)
     (fun _ => ?_) (by simp) (fun t i h => by simp at h) (by simp [tix, hpc, RPc.held])
     (fun e he => h.rLog r0 e he)
+    (by simp [hpc, RPc.onBuf]) (fun v hc => Or.inl ((consumed_setR_same (by rfl)).1 hc))
+    (fun hc => absurd ((consumed_setR_same (by rfl)).1 hc)
+      (h.held_not_consumed pay ln (r := r0) (by simp [hpc, RPc.held])))
   refine ⟨by simp [RPc.ticket], ?_, ?_, ?_, by simp, by simp⟩
   · simpa using k2.trans (hv _).1
   · simpa using k3.mono (hv _).1
@@ -408,6 +448,9 @@ theorem inv_r_len {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
     (by simp [RPc.ticket]) (fun e he => he) (fun i hi => by simpa [RPc.onBuf] using hi.symm)
     (fun _ => ?_) (by simp) (fun t i h => by simp at h) (by simp [tix, hpc, RPc.held])
     (fun e he => h.rLog r0 e he)
+    (by simp [hpc, RPc.onBuf]) (fun v hc => Or.inl ((consumed_setR_same (by rfl)).1 hc))
+    (fun hc => absurd ((consumed_setR_same (by rfl)).1 hc)
+      (h.held_not_consumed pay ln (r := r0) (by simp [hpc, RPc.held])))
   refine ⟨by simp [RPc.ticket], ?_, ?_, ?_, fun t n hn => ?_, by simp⟩
   · simpa using k2.trans (hv _).1
   · simpa using k3.mono (hv _).1
@@ -444,6 +487,9 @@ theorem inv_r_chunk {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ
     (by simp [RPc.ticket]) (fun e he => he) (fun i hi => by simpa [RPc.onBuf] using hi.symm)
     (fun _ => ?_) (by simp) (fun t i h => by simp at h) (by simp [tix, hpc, RPc.held])
     (fun e he => h.rLog r0 e he)
+    (by simp [hpc, RPc.onBuf]) (fun v hc => Or.inl ((consumed_setR_same (by rfl)).1 hc))
+    (fun hc => absurd ((consumed_setR_same (by rfl)).1 hc)
+      (h.held_not_consumed pay ln (r := r0) (by simp [hpc, RPc.held])))
   · by_cases hij : i = j
     · subst hij; simp
     · simp [hij]
@@ -484,7 +530,8 @@ theorem inv_r_cb {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ} {
       (by simp [RPc.ticket]) (fun e he => List.mem_cons_of_mem _ he)
       (fun i hi => by simpa [RPc.onBuf] using hi.symm) (fun _ => ?_) (by simp)
       (fun t' i h => by simp at h; obtain ⟨rfl, -⟩ := h; simp)
-      (by simp [tix, hpc, RPc.held]) (fun e he => ?_)
+      (by simp [tix, hpc, RPc.held]) (fun e he => ?_) (by simp [hpc, RPc.onBuf]) ?_
+      (fun _ => ⟨r0, by simp⟩)
     · refine ⟨by simp [RPc.ticket], ?_, ?_, ?_, by simp, by simp⟩
       · simp only [Cfg.setR_vr_self]; exact k2
       · simp only [Cfg.setR_vr_self, Cfg.setR_mem]; exact k3
@@ -493,6 +540,16 @@ theorem inv_r_cb {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ} {
       rcases he with rfl | he
       · exact ⟨by omega, by simpa using hnp, by simp, by simp⟩
       · exact h.rLog r0 e he
+    · -- only the ticket of this buffer becomes consumed
+      rintro v ⟨r, hr⟩
+      rw [setR_r] at hr
+      split_ifs at hr with h1
+      · subst h1
+        simp only [List.map_cons, List.mem_cons] at hr
+        rcases hr with rfl | hr
+        · exact Or.inr rfl
+        · exact Or.inl ⟨r, hr⟩
+      · exact Or.inl ⟨r, hr⟩
   | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     refine h.recv_onBuf pay ln hphj ho hg (fun i => by simp) (fun i _ => rfl)
@@ -501,6 +558,9 @@ theorem inv_r_cb {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ} {
       (fun i hi => by simp [RPc.onBuf] at hi) (fun hi => by simp [RPc.onBuf] at hi) (by simp)
       (fun t' i h => by simp at h)
       (by simp [tix, hpc, RPc.held]) (fun e he => h.rLog r0 e he)
+      (by simp [hpc, RPc.onBuf]) (fun v hc => Or.inl ((consumed_setR_same (by rfl)).1 hc))
+      (fun hc => absurd ((consumed_setR_same (by rfl)).1 hc)
+        (h.held_not_consumed pay ln (r := r0) (by simp [hpc, RPc.held])))
 
 /-! ## `rel`: `client_owned[i].store(false, Release)` -/
 
@@ -592,7 +652,8 @@ theorem inv_r_rel {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
   by_cases hij : i = j
   · -- the buffer is free again
     subst hij
-    obtain ⟨hf, hs, -, -, -, o', q, ho', -, hot, hq, hqv, -, -, -, hq4, hrecv, hnr⟩ := id hphj
+    obtain ⟨hf, hs, -, -, -, o', q, ho', -, hot, hq, hqv, -, -, -, hq4, hrecv, hnr, -⟩ :=
+      id hphj
     have hoo : o' = o := ho.eq_of_le (h.gen.uniq _) ho'.1 (ho'.2 o ho.1)
     rw [hoo] at hot
     refine ⟨.free, by simpa using hf, by simpa using hs, ?_, ?_, f, ?_, hfval, ?_, ?_⟩
@@ -632,7 +693,9 @@ theorem inv_r_rel {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ} {t : ℤ} {j : ℕ}
         exact Finset.mem_union_right _ ((hfv _).2.2.1 hr2)
   · obtain ⟨ph, hph⟩ := h.phase i
     refine ⟨ph, hph.recv_frame pay ln (Frame.recv (by simp [hij]) (by simp) (by simp)
-      (by simp) (by simp) hv (fun e he => he) (fun h1 => by simp [RPc.onBuf] at h1)) ?_⟩
+      (by simp) (by simp) hv (fun e he => he) (fun h1 => by simp [RPc.onBuf] at h1)
+      (fun h1 => by rw [hpc] at h1; simp [RPc.onBuf] at h1; exact absurd h1.symm hij)) ?_
+      (fun s' _ hc => (consumed_setR_same (by rfl)).1 hc)⟩
     -- the ticket this receiver gives up is not the one of another buffer
     intro s' hs' h1
     subst hs'
@@ -764,7 +827,9 @@ theorem inv_r_init {c : Cfg ρ} (h : Inv pay ln c) {r0 : ρ}
       · exact h.tixDisj r r' hne }
   obtain ⟨ph, hph⟩ := h.phase i
   refine ⟨ph, hph.recv_frame pay ln (Frame.recv (by simp) (by simp) (by simp)
-    (by simp) (by simp) hv (fun e he => he) (fun h1 => by simp [RPc.onBuf] at h1)) ?_⟩
+    (by simp) (by simp) hv (fun e he => he) (fun h1 => by simp [RPc.onBuf] at h1)
+    (fun h1 => by simp [hpc, RPc.onBuf] at h1)) ?_
+    (fun s' _ hc => (consumed_setR_same (by rfl)).1 hc)⟩
   intro s' _ h1; simp [hpc, RPc.ticket] at h1
 
 /-! ## All receiver steps -/

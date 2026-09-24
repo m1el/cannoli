@@ -16,7 +16,8 @@ Each buffer is in one of four phases:
 * `pub s`: sequence number `s` is the latest `client_seq[i]`; its message view
   covers the chunk, the length and `client_owned`. Only the holder of ticket
   `s` works on the buffer, and every non-atomic read of the chunk is in the
-  sender's view or in the view of that ticket's holder.
+  sender's view or in the view of that ticket's holder. Once `s` is consumed,
+  its holder is about to release the buffer.
 
 Around that, global facts: the sender is the only writer of chunks, lengths
 and sequence numbers; the two counters (`cur_seq`, the ticket counter) are
@@ -220,7 +221,8 @@ def PhaseOK (c : Cfg ρ) (i : ℕ) : Phase → Prop
         v = NO_SEQ ∨ Consumed c v ∨ m.time = q.time) ∧
       (∀ r, (c.r r).pc.onBuf = some i → RecvOK pay ln c i s o r) ∧
       (∀ id ∈ (c.na (.chunk i)).nr, id ∈ (c.vs (.chunk i)).nr ∨
-        ∃ r, (c.r r).pc.ticket = some (s : ℤ) ∧ id ∈ (c.vr r (.chunk i)).nr)
+        ∃ r, (c.r r).pc.ticket = some (s : ℤ) ∧ id ∈ (c.vr r (.chunk i)).nr) ∧
+      (Consumed c (s : ℤ) → ∃ r, (c.r r).pc = .rel (s : ℤ) i)
 
 /-- Chunks are the only non-atomic locations. -/
 def Loc.IsChunk : Loc → Prop
