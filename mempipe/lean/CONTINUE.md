@@ -34,16 +34,25 @@ Decisions and constraints:
 - Optional cross-check: herdtools7 with its RC11 `.cat` model on small mempipe
   litmus tests vs exhaustive exploration of the Lean machine.
 
-## State of the repo
+## State of the repo (updated)
 
-- Branch `mempipe-lean-orc11`, from `origin/main` at `cbb9c62` (PR #23 merged:
-  heap-backed `create_local`/`open_raw` Miri harness; PR #22: the stranded
-  buffer fix).
-- `mempipe/lean/`: `lakefile.toml` (Mathlib dep, libs `ORC11` and `Mempipe`),
-  `lean-toolchain`, `.gitignore`. **No Lean sources yet.** Run `lake update`
-  then `lake exe cache get` on corey (was interrupted on the Mac).
-- Rust toolchain in the repo is still `nightly-2024-03-01` (not relevant to the
-  Lean work).
+- Done and pushed to branch `mempipe-lean-orc11` (not pushed to a remote):
+  ORC11 port (`ORC11/`), mempipe encoding and **all three goals proved**
+  (`Mempipe/Safety.lean`: `no_race`, `no_fault`, `sender_log`, `recv_correct`,
+  `recv_once`; `Mempipe/Progress.lean`: `progress`). `scripts/check_axioms.sh`
+  passes (only propext / Classical.choice / Quot.sound). See `README.md` for
+  statements, the invariant and the full list of deviations.
+- Subagents used so far: 1 of 3 (wrote `ORC11/Wf.lean`).
+
+## Next steps (remaining)
+
+1. Ordering sanity check: parameterize the four Release/Acquire orderings
+   (client_seq store/load, client_owned=false store, alloc_buffer load) and
+   exhibit a reachable racy/faulty state for each weakened variant (small N=1,
+   one receiver, M ≤ 2 traces; weakened views never carry the chunk time or the
+   chunk read ids).
+2. Stage 2: RC11 ⇒ ORC11.
+3. Optional herdtools7 cross-check.
 
 ## The protocol being verified (`mempipe/src/lib.rs` on main)
 
@@ -200,10 +209,3 @@ child `ForkView(V) = (∅, ∅, V.cur, V.cur)`.
   must not constrain executions.
 - A receiver that stops while holding a ticket strands a buffer; progress
   statements must account for receivers that are mid-callback or retrying.
-
-## Next steps
-
-1. `lake update && lake exe cache get` in `mempipe/lean` on corey.
-2. Write `ORC11/Basic.lean` and `ORC11/Machine.lean` from the rules above,
-   checking each against Figs. 6-9 and the Coq files.
-3. Thread pool semantics, then the mempipe encoding, then invariants.
