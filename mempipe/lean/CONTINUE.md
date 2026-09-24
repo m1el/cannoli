@@ -46,13 +46,11 @@ Decisions and constraints:
 
 ## Next steps (remaining)
 
-1. Ordering sanity check: parameterize the four Release/Acquire orderings
-   (client_seq store/load, client_owned=false store, alloc_buffer load) and
-   exhibit a reachable racy/faulty state for each weakened variant (small N=1,
-   one receiver, M ≤ 2 traces; weakened views never carry the chunk time or the
-   chunk read ids).
+1. Done: ordering sanity check (`Mempipe/Weak.lean`, kernel-checked schedules
+   on the interpreter `ORC11/Exec.lean`).
 2. Stage 2: RC11 ⇒ ORC11.
-3. Optional herdtools7 cross-check.
+3. Optional herdtools7 cross-check (the interpreter `run?` can drive an
+   exhaustive explorer for small parameters).
 
 ## The protocol being verified (`mempipe/src/lib.rs` on main)
 

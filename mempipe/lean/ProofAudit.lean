@@ -10,3 +10,8 @@ import Mempipe
 #print axioms ORC11.Reachable.genInv
 #print axioms ORC11.Reachable.wfInv
 #print axioms ORC11.StepL.reflTransGen_toStep
+#print axioms Mempipe.progO_strong
+#print axioms Mempipe.weakSeqSt_racy
+#print axioms Mempipe.weakSeqLd_racy
+#print axioms Mempipe.weakRelSt_racy
+#print axioms Mempipe.weakAllocLd_racy

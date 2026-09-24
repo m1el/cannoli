@@ -7,3 +7,4 @@ import Mempipe.Safety
 import Mempipe.Idx
 import Mempipe.ProgressInv
 import Mempipe.Progress
+import Mempipe.Weak

@@ -56,6 +56,27 @@ theorem progress (hN : 0 < N) [Nonempty ρ] (hr : Reach N M pay ln c) :
   is a progress result, not a fair-liveness theorem. In the final state the
   sender has halted (`start M`) and every message is accepted.
 
+## The orderings are all needed
+
+`Mempipe/Weak.lean` parameterizes the programs by the orderings of the four
+synchronizing accesses: the `client_seq` store (Release) and its load in
+`try_recv` (Acquire), and the `client_owned = false` store (Release) and its
+load in `alloc_buffer` (Acquire). `progO_strong` shows that with all four at
+`acqrel` these are the verified programs. For each single weakening to
+`rlx`, a concrete schedule (one buffer, one receiver) reaches a data race:
+
+| Weakened | Theorem | Race |
+|---|---|---|
+| `client_seq` store | `weakSeqSt_racy` | receiver reads the chunk without seeing the sender's write |
+| `client_seq` load | `weakSeqLd_racy` | same |
+| `client_owned = false` store | `weakRelSt_racy` | sender overwrites the chunk without seeing the receiver's read |
+| `alloc_buffer` load | `weakAllocLd_racy` | same |
+
+This matches the Miri experiments. The schedules run on an executable
+latest-step interpreter (`ORC11/Exec.lean`, proved sound: `run?_reachable`),
+and the kernel checks them with `decide`. As controls, the same schedules
+with the code's orderings reach the same program points without a race.
+
 ## Layout
 
 | File | Contents |
@@ -64,6 +85,7 @@ theorem progress (hN : 0 < N) [Nonempty ρ] (hr : Reach N M pay ln c) :
 | `ORC11/Machine.lean` | `read_helper`, `write_helper`, `memory_write`, `read_step`, `write_step`, `machine_step`, `drf_pre`, `drf_post` |
 | `ORC11/Program.lean` | instructions, the combined thread step (`TStep`), the thread pool, `Reachable`, `Racy`, `Faulty` |
 | `ORC11/Lemmas.lean` | step inversions; unique positive times per location |
+| `ORC11/Exec.lean` | executable latest steps and schedules, proved sound |
 | `ORC11/Wf.lean` | closed, well-formed views and messages (`WfInv`); latest steps (`TStepL`, `StepL`) and their existence |
 | `Mempipe/Program.lean` | the sender and receiver programs, initial memory, the pool |
 | `Mempipe/Invariant.lean` | the safety invariant `Inv` and its initial case |
@@ -72,6 +94,7 @@ theorem progress (hN : 0 < N) [Nonempty ρ] (hr : Reach N M pay ln c) :
 | `Mempipe/Safety.lean` | the safety theorems |
 | `Mempipe/Idx.lean`, `Mempipe/ProgressInv.lean` | invariants used only for progress |
 | `Mempipe/Progress.lean` | the continuation: publish, hand out the ticket, accept, in order |
+| `Mempipe/Weak.lean` | the programs with weakened orderings, and their races |
 
 ## The invariant, in words
 
@@ -158,7 +181,4 @@ Each definition cites the Coq definition it ports. Deviations:
 
 - Stage 2: mechanize RC11 ⇒ ORC11 (every RC11-consistent execution is an
   ORC11 run), so that the trust base shrinks to the RC11 axioms.
-- Sanity check against weakened orderings: parameterize the four
-  Release/Acquire orderings and exhibit, for each weakened variant, a reachable
-  racy or faulty state (the Miri experiments found each of the four necessary).
 - Optional herdtools7 cross-check on small litmus tests.
