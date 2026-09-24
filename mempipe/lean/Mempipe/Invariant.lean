@@ -29,8 +29,8 @@ open ORC11
 
 variable {ρ : Type} [DecidableEq ρ]
 
-abbrev Mem := Memory Loc Val
-abbrev MsgT := Msg Loc Val
+abbrev Mem := Memory Loc ℤ
+abbrev MsgT := Msg Loc ℤ
 
 /-! ## Accessors -/
 
@@ -161,7 +161,7 @@ def IsLatest (C : List MsgT) (m : MsgT) : Prop := m ∈ C ∧ ∀ m' ∈ C, m'.t
 def Below (C : List MsgT) (t : ℕ) : Prop := ∀ m ∈ C, m.time ≤ t
 
 /-- The latest message of the cell has value `v`. -/
-def LatestIs (C : List MsgT) (v : Val) : Prop := ∃ m, IsLatest C m ∧ m.val = some v
+def LatestIs (C : List MsgT) (v : ℤ) : Prop := ∃ m, IsLatest C m ∧ m.val = some v
 
 /-- Ticket `v` was consumed: some receiver logged it. -/
 def Consumed (c : Cfg ρ) (v : ℤ) : Prop := ∃ r, v ∈ (c.r r).log.map Prod.fst
@@ -285,7 +285,7 @@ theorem isLatest_cons_new {m : MsgT} {C : List MsgT} {t : ℕ} (h : Below C t)
     · exact le_rfl
     · exact ((h m' hm').trans ht.le)⟩
 
-theorem latestIs_cons_new {m : MsgT} {C : List MsgT} {t : ℕ} {v : Val} (h : Below C t)
+theorem latestIs_cons_new {m : MsgT} {C : List MsgT} {t : ℕ} {v : ℤ} (h : Below C t)
     (ht : t < m.time) (hv : m.val = some v) : LatestIs (m :: C) v :=
   ⟨m, isLatest_cons_new h ht, hv⟩
 
@@ -298,7 +298,7 @@ theorem IsLatest.eq_of_le {C : List MsgT} {m m' : MsgT}
   uniq m' hm' m h.1 (le_antisymm (h.2 m' hm') ht)
 
 /-- Reading `l` at or after the latest message reads the latest message. -/
-theorem LatestIs.read {C : List MsgT} {v : Val} {m' : MsgT} {t : ℕ}
+theorem LatestIs.read {C : List MsgT} {v : ℤ} {m' : MsgT} {t : ℕ}
     (uniq : ∀ a ∈ C, ∀ b ∈ C, a.time = b.time → a = b)
     (h : LatestIs C v) (hb : Below C t) (hm' : m' ∈ C) (ht : t ≤ m'.time) :
     m'.val = some v := by

@@ -39,14 +39,13 @@ inductive Loc where
   | tick
   deriving DecidableEq
 
-abbrev Val := ℤ
 
 /-- `u64::MAX` -/
-def NO_SEQ : Val := -1
+def NO_SEQ : ℤ := -1
 
 /-- Initial memory (`SendPipe::create` / `create_local`): chunks are left
 uninitialized. -/
-def initVal : Loc → Option Val
+def initVal : Loc → Option ℤ
   | .own _ => some 0
   | .len _ => some 0
   | .cseq _ => some NO_SEQ
@@ -87,7 +86,7 @@ structure SState where
   log : List Entry
 
 /-- The sender. -/
-def sprog (N M : ℕ) (pay ln : ℕ → ℤ) (σ : SState) : Instr Loc Val SState :=
+def sprog (N M : ℕ) (pay ln : ℕ → ℤ) (σ : SState) : Instr Loc ℤ SState :=
   match σ.pc with
   | .start k =>
       if k < M then .choose fun b => { σ with pc := .alloc k b 0 } else .halt
@@ -139,7 +138,7 @@ structure RState where
 
 /-- A receiver. After scanning all buffers without a match (`try_recv`
 returns `None`) or after `Err`, it calls `try_recv` again with its ticket. -/
-def rprog (N : ℕ) (ρ : RState) : Instr Loc Val RState :=
+def rprog (N : ℕ) (ρ : RState) : Instr Loc ℤ RState :=
   match ρ.pc with
   | .init => .update .tick .rlx .rlx (· + 1) fun t => { ρ with pc := .scan t 0 }
   | .scan t i =>
@@ -180,7 +179,7 @@ abbrev LS {ρ : Type} : TId ρ → Type
   | .recv _ => RState
 
 /-- Programs. -/
-def prog {ρ : Type} (N M : ℕ) (pay ln : ℕ → ℤ) : (i : TId ρ) → LS i → Instr Loc Val (LS i)
+def prog {ρ : Type} (N M : ℕ) (pay ln : ℕ → ℤ) : (i : TId ρ) → LS i → Instr Loc ℤ (LS i)
   | .sender => sprog N M pay ln
   | .recv _ => rprog N
 
@@ -189,7 +188,7 @@ def init0 {ρ : Type} : (i : TId ρ) → LS i
   | .sender => ⟨.start 0, []⟩
   | .recv _ => ⟨.init, []⟩
 
-abbrev Cfg (ρ : Type) := Config (TId ρ) LS Loc Val
+abbrev Cfg (ρ : Type) := Config (TId ρ) LS Loc ℤ
 
 /-- Reachable configurations of the pipe. -/
 def Reach {ρ : Type} [DecidableEq ρ] (N M : ℕ) (pay ln : ℕ → ℤ) (c : Cfg ρ) : Prop :=

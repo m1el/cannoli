@@ -292,7 +292,7 @@ theorem inv_s_chunk {c : Cfg ρ} (h : Inv pay ln c) {k : ℕ} {b : Bool} {j : �
 /-- Facts about a relaxed sender write to `l0`, which is `client_len[j]` or
 `client_owned[j]`. -/
 theorem Inv.sender_rlx {c : Cfg ρ} (h : Inv pay ln c) {σ : SState} {l0 : Loc} {j t : ℕ}
-    {v : Val} (hl0 : l0 = .len j ∨ l0 = .own j)
+    {v : ℤ} (hl0 : l0 = .len j ∨ l0 = .own j)
     (hg : GenInv (c.setS σ (writeTView (c.th .sender).2 .rlx l0 t)
       (c.mem.add l0 ⟨t, some v, writeRw (c.th .sender).2 .rlx l0 t ⊥⟩) (addAWrite c.na l0 t)))
     (hlt : (c.vs l0).w < t) (hlog : σ.log = c.s.log) (hnpub : σ.pc.npub = c.s.pc.npub)
@@ -460,5 +460,260 @@ theorem inv_s_spin {c : Cfg ρ} (h : Inv pay ln c) {k : ℕ} {j : ℕ}
   · rw [k4]; simp [hpc, SPc.sealing]
   · rw [k3, k4]; simp
   · rw [k1]
+
+/-! ## `fadd`: `cur_seq.fetch_add(1, Relaxed)` -/
+
+theorem inv_s_fadd {c : Cfg ρ} (h : Inv pay ln c) {k : ℕ} {b : Bool} {j : ℕ}
+    (hpc : c.s.pc = .fadd k b j) {σ : SState} {𝓥 : TView Loc} {M' : Mem} {𝓝' : View Loc}
+    (hst : TStep (sprog N M pay ln) c.s (c.th .sender).2 c.mem c.na σ 𝓥 M' 𝓝')
+    (hg : GenInv (c.setS σ 𝓥 M' 𝓝')) : Inv pay ln (c.setS σ 𝓥 M' 𝓝') := by
+  have hv : c.vs ≤ 𝓥.cur := hst.cur_le
+  obtain ⟨m1, hm1, v, tr, hv1, -, -, hfresh, -, -, hσ, -, hM, -, hpost⟩ :=
+    hst.update_inv (l := .curSeq) (or := .rlx) (ow := .rlx) (f := (· + 1))
+      (by simp only [sprog, hpc]; rfl)
+  obtain ⟨rfl, -⟩ := hpost
+  have hnfa : c.s.pc.nfa = k := by simp [hpc, SPc.nfa, SPc.k]
+  -- the update reads the latest `cur_seq`, at time `k + 1`
+  have ht1 : m1.time = k + 1 := by
+    obtain ⟨mt, hmt, hmt'⟩ := h.curSeqHas
+    have h1 : m1.time ≤ k + 1 := hnfa ▸ h.curSeqTop m1 hm1
+    by_contra hne
+    obtain ⟨m', hm', ht'⟩ := h.curSeqDown mt hmt (m1.time + 1) (by omega) (by omega)
+    exact hfresh m' hm' ht'
+  have hvk : v = k := by
+    have := h.curSeqVal m1 hm1
+    rw [hv1, ht1] at this
+    simp only [Option.some.injEq] at this; omega
+  subst hvk
+  subst hσ
+  obtain ⟨mnew, hmt, hmv, rfl⟩ : ∃ mnew : MsgT, mnew.time = m1.time + 1 ∧
+      mnew.val = some ((k : ℤ) + 1) ∧ M' = c.mem.add .curSeq mnew := ⟨_, rfl, rfl, hM⟩
+  have hmem : ∀ l, l ≠ .curSeq → c.mem.add .curSeq mnew l = c.mem l :=
+    fun l hl => Memory.add_ne _ _ hl
+  have hnaC : ∀ i, addAWrite (addARead c.na .curSeq tr) .curSeq (m1.time + 1) (.chunk i) =
+      c.na (.chunk i) := fun i => by simp
+  have hk : ({ c.s with pc := .pub k b j (k : ℤ) } : SState).pc.npub = c.s.pc.npub := by
+    simp [hpc, SPc.npub, SPc.k]
+  refine
+  { gen := hg
+    phase := fun i => ?_
+    chunkS := fun i => by simpa [hmem] using (h.chunkS i).mono (hv _).1
+    chunkNa := fun i => by simpa [hmem] using h.chunkNa i
+    chunkAt := fun i => by simpa using h.chunkAt i
+    atomNa := fun l hl => by
+      by_cases hl' : l = .curSeq
+      · subst hl'; simpa using h.atomNa _ hl
+      · simpa [hl'] using h.atomNa l hl
+    atomVal := fun l hl m hm => by
+      simp only [Cfg.setS_mem] at hm
+      rcases Memory.mem_add.1 hm with ⟨-, he⟩ | hm
+      · rw [he, hmv]; rfl
+      · exact h.atomVal l hl m hm
+    lenS := fun i => by simpa [hmem] using (h.lenS i).mono (hv _).1
+    cseqS := fun i => by simpa [hmem] using (h.cseqS i).mono (hv _).1
+    cseqVal := fun i => by simpa [hmem, hk] using h.cseqVal i
+    cseqUniq := fun i j' => by simpa [hmem] using h.cseqUniq i j'
+    curSeqVal := fun m hm => by
+      simp only [Cfg.setS_mem, Memory.add_self, List.mem_cons] at hm
+      rcases hm with he | hm
+      · rw [he, hmv, hmt, ht1]; simp only [Option.some.injEq]; omega
+      · exact h.curSeqVal m hm
+    curSeqDown := fun m hm t' h1 h2 => by
+      simp only [Cfg.setS_mem, Memory.add_self, List.mem_cons] at hm ⊢
+      rcases hm with he | hm
+      · rw [he, hmt] at h2
+        by_cases ht' : t' = m1.time + 1
+        · exact ⟨mnew, Or.inl rfl, by rw [hmt, ht']⟩
+        · obtain ⟨m', hm', ht''⟩ := h.curSeqDown m1 hm1 t' h1 (by omega)
+          exact ⟨m', Or.inr hm', ht''⟩
+      · obtain ⟨m', hm', ht''⟩ := h.curSeqDown m hm t' h1 h2
+        exact ⟨m', Or.inr hm', ht''⟩
+    curSeqTop := fun m hm => by
+      simp only [Cfg.setS_mem, Memory.add_self, List.mem_cons] at hm
+      simp only [Cfg.setS_s, SPc.nfa]
+      rcases hm with he | hm
+      · rw [he, hmt, ht1]
+      · have := h.curSeqTop m hm; rw [hnfa] at this; omega
+    curSeqHas := ⟨mnew, by simp, by simp [hmt, ht1, SPc.nfa]⟩
+    tickVal := by simpa [hmem] using h.tickVal
+    tickDown := by simpa [hmem] using h.tickDown
+    sFault := by simp
+    sPub := fun k' b' i' s' hh => by simp at hh; obtain ⟨rfl, -, -, rfl⟩ := hh; rfl
+    sLog := by simpa [hk] using h.sLog
+    rFault := by simpa using h.rFault
+    rRel := by simpa using h.rRel
+    rTix := by simpa [hmem] using h.rTix
+    rLog := by simpa [hk] using h.rLog
+    tixNodup := by simpa using h.tixNodup
+    tixDisj := by simpa using h.tixDisj }
+  by_cases hij : i = j
+  · subst hij
+    obtain ⟨phj, hphj⟩ := h.phase i
+    match phj, hphj with
+    | .free, hphj' => exact absurd hphj'.2.1 (by simp [hpc, SPc.sealing])
+    | .fill, hphj' => exact absurd hphj'.1 (by simp [hpc, SPc.fill])
+    | .pub _, hphj' => exact absurd hphj'.2.1 (by simp [hpc, SPc.sealing])
+    | .sealing, hphj' =>
+      obtain ⟨-, hnr, hnl, hna, hc1, hc2, o, ho, hov, hot⟩ := hphj'
+      refine ⟨.sealing, by simp [SPc.sealing], fun r => by simpa using hnr r, ?_, ?_, ?_, ?_,
+        o, by simpa [hmem] using ho, hov, by simpa using hot.trans (hv _).1⟩
+      · intro m' hm' v' hv'
+        simpa using hnl m' (by simpa [hmem] using hm') v' hv'
+      · simpa using hna.trans (hv _).2.2.1
+      · simpa [hmem, hpc, SPc.k] using hc1
+      · simpa [hmem, hpc, SPc.k] using hc2
+  · obtain ⟨ph, hph⟩ := h.phase i
+    refine ⟨ph, hph.sender_frame pay ln (Frame.sender ?_ ?_ ?_ ?_ ?_ hv ?_ ?_ ?_ ?_)⟩ <;>
+      simp [hpc, SPc.fill, SPc.sealing, SPc.npub, SPc.k, hij, Ne.symm hij, hmem]
+
+/-! ## `pub`: `client_seq[i].store(seq, Release)` -/
+
+theorem inv_s_pub {c : Cfg ρ} (h : Inv pay ln c) {k : ℕ} {b : Bool} {j : ℕ} {s : ℤ}
+    (hpc : c.s.pc = .pub k b j s) {σ : SState} {𝓥 : TView Loc} {M' : Mem} {𝓝' : View Loc}
+    (hst : TStep (sprog N M pay ln) c.s (c.th .sender).2 c.mem c.na σ 𝓥 M' 𝓝')
+    (hg : GenInv (c.setS σ 𝓥 M' 𝓝')) : Inv pay ln (c.setS σ 𝓥 M' 𝓝') := by
+  have hsk : s = k := h.sPub k b j s hpc
+  subst hsk
+  obtain ⟨t, -, hlt, -, hσ, rfl, hM, -, hpost⟩ :=
+    hst.write_inv (l := .cseq j) (o := .acqrel) (v := (k : ℤ)) (by simp only [sprog, hpc]; rfl)
+  simp only [DrfPostWrite, MemOrder.rlx_le_acqrel, ↓reduceIte] at hpost
+  subst hpost
+  rw [← vs_def] at hlt
+  have hqv' : c.vs ≤ (writeRw (c.th .sender).2 .acqrel (.cseq j) t ⊥).getD ⊥ :=
+    writeRw_rel (o := .acqrel) (by decide)
+  obtain ⟨q, hqt, hqval, hqv, rfl⟩ : ∃ q : MsgT, q.time = t ∧ q.val = some (k : ℤ) ∧
+      c.vs ≤ q.view.getD ⊥ ∧ M' = c.mem.add (.cseq j) q := ⟨_, rfl, rfl, hqv', hM⟩
+  have hv : c.vs ≤ (writeTView (c.th .sender).2 .acqrel (.cseq j) t).cur :=
+    writeTView_cur_le _ _ _ _
+  have hvt : ((writeTView (c.th .sender).2 .acqrel (.cseq j) t).cur (.cseq j)).w = t :=
+    writeTView_cur_w _ _ _ hlt
+  have hmem : ∀ l, l ≠ .cseq j → c.mem.add (.cseq j) q l = c.mem l :=
+    fun l hl => Memory.add_ne _ _ hl
+  have hnaC : ∀ i, addAWrite c.na (.cseq j) t (.chunk i) = c.na (.chunk i) := fun i => by simp
+  -- the new program counter
+  have key : σ.pc.npub = k + 1 ∧ σ.pc.nfa = k + 1 ∧ σ.pc.fill = none ∧
+      σ.pc.sealing = none ∧ σ.log = ((k : ℤ), pay k, ln k) :: c.s.log ∧ σ.pc ≠ .fault ∧
+      ∀ k b i s, σ.pc ≠ .pub k b i s := by
+    subst hσ; cases b <;> simp [SPc.npub, SPc.nfa, SPc.k, SPc.fill, SPc.sealing]
+  obtain ⟨k1, k2, k3, k4, k5, k6, k7⟩ := key
+  have hnp : c.s.pc.npub = k := by simp [hpc, SPc.npub, SPc.k]
+  have hnf : c.s.pc.nfa = k + 1 := by simp [hpc, SPc.nfa, SPc.k]
+  refine
+  { gen := hg
+    phase := fun i => ?_
+    chunkS := fun i => by simpa [hmem] using (h.chunkS i).mono (hv _).1
+    chunkNa := fun i => by simpa [hmem] using h.chunkNa i
+    chunkAt := fun i => by simpa using h.chunkAt i
+    atomNa := fun l hl => by
+      by_cases hl' : l = .cseq j
+      · subst hl'; simpa using h.atomNa _ hl
+      · simpa [hl'] using h.atomNa l hl
+    atomVal := fun l hl m hm => by
+      simp only [Cfg.setS_mem] at hm
+      rcases Memory.mem_add.1 hm with ⟨-, he⟩ | hm
+      · rw [he, hqval]; rfl
+      · exact h.atomVal l hl m hm
+    lenS := fun i => by simpa [hmem] using (h.lenS i).mono (hv _).1
+    cseqS := fun i => by
+      simp only [Cfg.setS_mem, Cfg.setS_vs]
+      refine below_add ((h.cseqS i).mono (hv _).1) ?_ le_rfl
+      intro hi; cases hi; rw [hvt, hqt]
+    cseqVal := fun i m hm v hv' => by
+      simp only [Cfg.setS_mem, Cfg.setS_s, k1] at hm ⊢
+      rcases Memory.mem_add.1 hm with ⟨-, he⟩ | hm
+      · rw [he, hqval, Option.some.injEq] at hv'; subst hv'; right; omega
+      · rcases h.cseqVal i m hm v hv' with h1 | h1
+        · exact Or.inl h1
+        · right; rw [hnp] at h1; omega
+    cseqUniq := fun i i' m hm m' hm' v hv1 hv2 hne => by
+      simp only [Cfg.setS_mem] at hm hm'
+      rcases Memory.mem_add.1 hm with ⟨hi, he⟩ | hm <;>
+        rcases Memory.mem_add.1 hm' with ⟨hi', he'⟩ | hm'
+      · simp only [Loc.cseq.injEq] at hi hi'; rw [hi, hi']
+      · rw [he, hqval, Option.some.injEq] at hv1; subst hv1
+        rcases h.cseqVal i' m' hm' _ hv2 with h1 | h1
+        · exact absurd h1 hne
+        · rw [hnp] at h1; omega
+      · rw [he', hqval, Option.some.injEq] at hv2; subst hv2
+        rcases h.cseqVal i m hm _ hv1 with h1 | h1
+        · exact absurd h1 hne
+        · rw [hnp] at h1; omega
+      · exact h.cseqUniq i i' m hm m' hm' v hv1 hv2 hne
+    curSeqVal := by simpa [hmem] using h.curSeqVal
+    curSeqDown := by simpa [hmem] using h.curSeqDown
+    curSeqTop := by simpa [hmem, k2, hnf] using h.curSeqTop
+    curSeqHas := by simpa [hmem, k2, hnf] using h.curSeqHas
+    tickVal := by simpa [hmem] using h.tickVal
+    tickDown := by simpa [hmem] using h.tickDown
+    sFault := by simpa using k6
+    sPub := fun k' b' i' s' hh => absurd (by simpa using hh) (k7 k' b' i' s')
+    sLog := by simp only [Cfg.setS_s, k5, k1, h.sLog, hnp]; rfl
+    rFault := by simpa using h.rFault
+    rRel := by simpa using h.rRel
+    rTix := by simpa [hmem] using h.rTix
+    rLog := fun r e he => by
+      obtain ⟨e1, e2, e3, e4⟩ := h.rLog r e (by simpa using he)
+      refine ⟨e1, ?_, e3, e4⟩
+      simp only [Cfg.setS_s, k1]; rw [hnp] at e2; omega
+    tixNodup := by simpa using h.tixNodup
+    tixDisj := by simpa using h.tixDisj }
+  by_cases hij : i = j
+  · subst hij
+    obtain ⟨phj, hphj⟩ := h.phase i
+    match phj, hphj with
+    | .free, hphj' => exact absurd hphj'.2.1 (by simp [hpc, SPc.sealing])
+    | .fill, hphj' => exact absurd hphj'.1 (by simp [hpc, SPc.fill])
+    | .pub _, hphj' => exact absurd hphj'.2.1 (by simp [hpc, SPc.sealing])
+    | .sealing, hphj' =>
+      obtain ⟨-, hnr, hnl, hna, hc1, hc2, o, ho, hov, hot⟩ := hphj'
+      refine ⟨.pub k, by simp [k3], by simp [k4], by simp [k1], ?_, ?_, o, q, ?_, hov,
+        by simpa using hot.trans (hv _).1, ?_, hqval, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      · simpa [hmem, hpc, SPc.k] using hc1
+      · simpa [hmem, hpc, SPc.k] using hc2
+      · simpa [hmem] using ho
+      · simp only [Cfg.setS_mem, Memory.add_self]
+        exact isLatest_cons_new (h.cseqS i) (hqt ▸ hlt)
+      · simpa [hmem] using (h.chunkS i).mono (hqv _).1
+      · simpa [hmem] using (h.lenS i).mono (hqv _).1
+      · exact hot.trans (hqv _).1
+      · intro m hm v hv'
+        simp only [Cfg.setS_mem, Memory.add_self, List.mem_cons] at hm
+        rcases hm with he | hm
+        · exact Or.inr (Or.inr (by rw [he]))
+        · rcases hnl m hm v hv' with h1 | h1
+          · exact Or.inl h1
+          · exact Or.inr (Or.inl (by simpa using h1))
+      · intro r hr; exact absurd (by simpa using hr) (hnr r)
+      · intro id hid
+        simp only [Cfg.setS_na, hnaC] at hid
+        exact Or.inl ((hv _).2.2.1 (hna hid))
+  · obtain ⟨ph, hph⟩ := h.phase i
+    refine ⟨ph, hph.sender_frame pay ln (Frame.sender ?_ ?_ ?_ ?_ ?_ hv ?_ ?_ ?_ ?_)⟩
+    · simp [hmem]
+    · simp [hmem]
+    · simp [hmem, hij]
+    · simp [hmem]
+    · simp [hnaC]
+    · rw [k3, hpc]; simp [SPc.fill]
+    · rw [k4, hpc]; simp [SPc.sealing, Ne.symm hij]
+    · rw [k3, k4]; simp
+    · rw [k1, hnp]; omega
+
+/-! ## All sender steps -/
+
+theorem inv_sender {c : Cfg ρ} (h : Inv pay ln c) {σ : SState} {𝓥 : TView Loc} {M' : Mem}
+    {𝓝' : View Loc}
+    (hst : TStep (sprog N M pay ln) c.s (c.th .sender).2 c.mem c.na σ 𝓥 M' 𝓝')
+    (hg : GenInv (c.setS σ 𝓥 M' 𝓝')) : Inv pay ln (c.setS σ 𝓥 M' 𝓝') := by
+  cases hpc : c.s.pc with
+  | start k => exact inv_s_start N M pay ln h hpc hst hg
+  | alloc k b i => exact inv_s_alloc N M pay ln h hpc hst hg
+  | chunk k b i => exact inv_s_chunk N M pay ln h hpc hst hg
+  | len k b i => exact inv_s_len N M pay ln h hpc hst hg
+  | own k b i => exact inv_s_own N M pay ln h hpc hst hg
+  | fadd k b i => exact inv_s_fadd N M pay ln h hpc hst hg
+  | pub k b i s => exact inv_s_pub N M pay ln h hpc hst hg
+  | spin k i => exact inv_s_spin N M pay ln h hpc hst hg
+  | fault => exact (hst.fault_inv (by simp [sprog, hpc])).elim
 
 end Mempipe

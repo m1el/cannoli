@@ -13,13 +13,12 @@ open ORC11
 
 variable {ρ : Type} [DecidableEq ρ] (pay ln : ℕ → ℤ)
 
-/-- Hypotheses of the frame lemma. -/
-structure Frame (c c' : Cfg ρ) (i : ℕ) : Prop where
+/-- Frame hypotheses about memory, views and the sender. -/
+structure Frame0 (c c' : Cfg ρ) (i : ℕ) : Prop where
   own : c'.mem (.own i) = c.mem (.own i)
   len : c'.mem (.len i) = c.mem (.len i)
   cseq : c'.mem (.cseq i) = c.mem (.cseq i)
   chunk : c'.mem (.chunk i) = c.mem (.chunk i)
-  na : (c'.na (.chunk i)).nr = (c.na (.chunk i)).nr
   vs : ∀ l, c.vs l ≤ c'.vs l
   vr : ∀ r l, c.vr r l ≤ c'.vr r l
   fill : c'.s.pc.fill = some i ↔ c.s.pc.fill = some i
@@ -27,6 +26,10 @@ structure Frame (c c' : Cfg ρ) (i : ℕ) : Prop where
   pc : c'.s.pc.fill = some i ∨ c'.s.pc.sealing = some i → c'.s.pc = c.s.pc
   npub : c.s.pc.npub ≤ c'.s.pc.npub
   cons : ∀ v, Consumed c v → Consumed c' v
+
+/-- Hypotheses of the frame lemma. -/
+structure Frame (c c' : Cfg ρ) (i : ℕ) : Prop extends Frame0 c c' i where
+  na : (c'.na (.chunk i)).nr = (c.na (.chunk i)).nr
   on : ∀ r, (c'.r r).pc.onBuf = some i → (c'.r r).pc = (c.r r).pc
 
 theorem PhaseOK.frame {c c' : Cfg ρ} {i : ℕ} {ph : Phase}
@@ -90,5 +93,43 @@ theorem PhaseOK.frame {c c' : Cfg ρ} {i : ℕ} {ph : Phase}
       rcases hnr id hid with h1 | ⟨r, hr1, hr2⟩
       · exact Or.inl ((F.vs _).2.2.1 h1)
       · exact Or.inr ⟨r, htk s rfl r hr1, (F.vr r _).2.2.1 hr2⟩
+
+/-- A variant for the published phase, for steps of the receiver working on
+the buffer: receivers may change state on the buffer if they keep its facts,
+and the race detector may record new chunk reads by the ticket's holder. -/
+theorem PhaseOK.pub_frame {c c' : Cfg ρ} {i s : ℕ}
+    (h : PhaseOK pay ln c i (.pub s)) (F : Frame0 c c' i)
+    (htk : ∀ r, (c.r r).pc.ticket = some (s : ℤ) → (c'.r r).pc.ticket = some (s : ℤ))
+    (hon : ∀ o, IsLatest (c.mem (.own i)) o → o.val = some 1 → o.time ≤ (c.vs (.own i)).w →
+      ∀ r, (c'.r r).pc.onBuf = some i →
+        (c'.r r).pc = (c.r r).pc ∨ RecvOK pay ln c' i s o r)
+    (hna : ∀ id ∈ (c'.na (.chunk i)).nr, id ∈ (c.na (.chunk i)).nr ∨
+      ∃ r, (c'.r r).pc.ticket = some (s : ℤ) ∧ id ∈ (c'.vr r (.chunk i)).nr) :
+    PhaseOK pay ln c' i (.pub s) := by
+  obtain ⟨hf, hs, hnp, hc1, hc2, o, q, ho, hov, hot, hq, hqv, hqc, hql, hqo, hq4, hrecv,
+    hnr⟩ := h
+  refine ⟨fun h' => hf (F.fill.1 h'), fun h' => hs (F.sealing.1 h'),
+    lt_of_lt_of_le hnp F.npub, F.chunk ▸ hc1, F.len ▸ hc2, o, q, F.own ▸ ho, hov,
+    hot.trans (F.vs _).1, F.cseq ▸ hq, hqv, F.chunk ▸ hqc, F.len ▸ hql, hqo, ?_, ?_, ?_⟩
+  · intro m hm v hv
+    rw [F.cseq] at hm
+    rcases hq4 m hm v hv with h1 | h1 | h1
+    · exact Or.inl h1
+    · exact Or.inr (Or.inl (F.cons v h1))
+    · exact Or.inr (Or.inr h1)
+  · intro r hr
+    rcases hon o ho hov hot r hr with hpc | hok
+    · obtain ⟨t1, t2, t3, t4, t5, t6⟩ := hrecv r (hpc ▸ hr)
+      refine ⟨hpc ▸ t1, t2.trans (F.vr r _).1, ?_, ?_, fun t n h => t5 t n (hpc ▸ h),
+        fun t n p h => t6 t n p (hpc ▸ h)⟩
+      · rw [F.chunk]; exact t3.mono (F.vr r _).1
+      · rw [F.len]; exact t4.mono (F.vr r _).1
+    · exact hok
+  · intro id hid
+    rcases hna id hid with hid | hid
+    · rcases hnr id hid with h1 | ⟨r, hr1, hr2⟩
+      · exact Or.inl ((F.vs _).2.2.1 h1)
+      · exact Or.inr ⟨r, htk r hr1, (F.vr r _).2.2.1 hr2⟩
+    · exact Or.inr hid
 
 end Mempipe
