@@ -381,4 +381,144 @@ theorem recv_to_rel (hN : 0 < N) (n : ℕ) : ∀ {c : Cfg ρ} {r : ρ} {s j : �
 
 end Receivers
 
+theorem latestIs_add_top {C : List MsgT} {m : MsgT} {v : ℤ}
+    (hlt : ∀ m' ∈ C, m'.time < m.time) (hv : m.val = some v) : LatestIs (m :: C) v :=
+  ⟨m, ⟨List.mem_cons_self, fun m' hm' => by
+    rcases List.mem_cons.1 hm' with rfl | hm'
+    · exact le_rfl
+    · exact (hlt m' hm').le⟩, hv⟩
+
+section Receivers2
+
+variable {N M pay ln}
+
+/-- A receiver at the release store releases its buffer. -/
+theorem recv_release {c : Cfg ρ} (hr : Reach N M pay ln c) {r : ρ} {t : ℤ} {j : ℕ}
+    (hpc : (c.r r).pc = .rel t j) :
+    ∃ c1 : Cfg ρ, StepL (prog N M pay ln) c c1 ∧ (c1.r r).pc = .init ∧ c1.s = c.s ∧
+      (∀ r', r' ≠ r → c1.r r' = c.r r') ∧ LatestIs (c1.mem (.own j)) 0 ∧
+      ∀ l, l ≠ .own j → c1.mem l = c.mem l := by
+  obtain ⟨m, 𝓥, 𝓝, hv, hlt, hs⟩ := recv_write hr (r := r) (by simp only [rprog, hpc]; rfl)
+  refine ⟨_, hs, by simp, by simp, fun r' hr' => Cfg.setR_r_ne _ _ _ _ _ hr', ?_,
+    fun l hl => by simp [hl]⟩
+  simp only [Cfg.setR_mem, Memory.add_self]
+  exact latestIs_add_top hlt hv
+
+/-- A receiver at `request_ticket` takes the next ticket. -/
+theorem recv_ticket {c : Cfg ρ} (hr : Reach N M pay ln c) {r : ρ}
+    (hpc : (c.r r).pc = .init) :
+    ∃ (c1 : Cfg ρ) (m1 : MsgT) (τ : ℤ), IsLatest (c.mem .tick) m1 ∧ m1.val = some τ ∧
+      StepL (prog N M pay ln) c c1 ∧ (c1.r r).pc = .scan τ 0 ∧ c1.s = c.s ∧
+      (∀ r', r' ≠ r → c1.r r' = c.r r') ∧ ∀ l, l ≠ .tick → c1.mem l = c.mem l := by
+  have h := reach_inv N M pay ln hr
+  obtain ⟨m1, hm1⟩ := exists_isLatest (hr.wf.nonempty .tick)
+  obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.1 (h.atomVal _ (by simp [Loc.IsChunk]) m1 hm1.1)
+  obtain ⟨m2, 𝓥, 𝓝, -, -, -, hs⟩ :=
+    recv_update hr (r := r) (by simp only [rprog, hpc]; rfl) hm1 hτ
+  exact ⟨_, m1, τ, hm1, hτ, hs, by simp, by simp, fun r' hr' => Cfg.setR_r_ne _ _ _ _ _ hr',
+    fun l hl => by simp [hl]⟩
+
+end Receivers2
+
+/-! ## The sender -/
+
+section Sender
+
+variable {N M pay ln}
+
+/-- The sender scans for a buffer and takes one; buffer `j` is free. -/
+theorem sender_alloc (hN : 0 < N) {j : ℕ} (hj : j < N) (n : ℕ) : ∀ {c : Cfg ρ} {k : ℕ}
+    {b : Bool} {i : ℕ}, Reach N M pay ln c → c.s.pc = .alloc k b i → i < N →
+    LatestIs (c.mem (.own j)) 0 → dist N i j ≤ n →
+    ∃ c' i', Run N M pay ln c c' ∧ c'.s.pc = .chunk k b i' ∧ i' < N ∧
+      c'.s.log = c.s.log ∧ (∀ r, c'.r r = c.r r) ∧ c'.mem = c.mem := by
+  induction n with
+  | zero =>
+    intro c k b i hr hpc hi hfree hd
+    have hij : i = j := by unfold dist at hd; split_ifs at hd <;> omega
+    subst hij
+    obtain ⟨o, ho, hov⟩ := hfree
+    obtain ⟨𝓥, 𝓝, hs⟩ := sender_read hr (by simp only [sprog, hpc]; rfl) ho
+    exact ⟨_, i, .single hs, by simp [hov], hi, by simp [hov], fun r => by simp, rfl⟩
+  | succ n ih =>
+    intro c k b i hr hpc hi hfree hd
+    have h := reach_inv N M pay ln hr
+    obtain ⟨o, ho⟩ := exists_isLatest (hr.wf.nonempty (.own i))
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.1 (h.atomVal _ (by simp [Loc.IsChunk]) o ho.1)
+    obtain ⟨𝓥, 𝓝, hs⟩ := sender_read hr (by simp only [sprog, hpc]; rfl) ho
+    by_cases hv0 : v = 0
+    · subst hv0
+      exact ⟨_, i, .single hs, by simp [hv], hi, by simp [hv], fun r => by simp, rfl⟩
+    · have hij : i ≠ j := by
+        rintro rfl
+        exact hv0 (LatestIs.unique (h.gen.uniq _) ⟨o, ho, hv⟩ hfree)
+      obtain ⟨c', i', hrun, h1, h2, h3, h4, h5⟩ := ih (k := k) (b := b) (i := (i + 1) % N) (hr.stepL hs)
+        (by simp [hv, hv0]) (Nat.mod_lt _ hN) (by simpa using hfree)
+        (by have := dist_next hi hj hij; omega)
+      exact ⟨c', i', .head hs hrun, h1, h2, by simpa [hv, hv0] using h3,
+        fun r => by simpa using h4 r,
+        by simpa using h5⟩
+
+/-- The sender fills and publishes the buffer it took. -/
+theorem sender_publish {c : Cfg ρ} (hr : Reach N M pay ln c) {k : ℕ} {b : Bool} {j : ℕ}
+    (hpc : c.s.pc = .chunk k b j ∨ c.s.pc = .len k b j ∨ c.s.pc = .own k b j ∨
+      c.s.pc = .fadd k b j ∨ ∃ s, c.s.pc = .pub k b j s) :
+    ∃ c', Run N M pay ln c c' ∧
+      (c'.s.pc = (if b then .spin k j else .start (k + 1))) ∧ (∀ r, c'.r r = c.r r) := by
+  -- the publication step
+  have pub : ∀ {c : Cfg ρ}, Reach N M pay ln c → (∃ s, c.s.pc = .pub k b j s) →
+      ∃ c', Run N M pay ln c c' ∧
+        (c'.s.pc = (if b then .spin k j else .start (k + 1))) ∧ (∀ r, c'.r r = c.r r) := by
+    intro c hr ⟨s, hpc⟩
+    obtain ⟨m, 𝓥, 𝓝, -, -, hs⟩ := sender_write hr (by simp only [sprog, hpc]; rfl)
+    exact ⟨_, .single hs, by simp, fun r => by simp⟩
+  have fadd : ∀ {c : Cfg ρ}, Reach N M pay ln c → c.s.pc = .fadd k b j →
+      ∃ c', Run N M pay ln c c' ∧
+        (c'.s.pc = (if b then .spin k j else .start (k + 1))) ∧ (∀ r, c'.r r = c.r r) := by
+    intro c hr hpc
+    have h := reach_inv N M pay ln hr
+    obtain ⟨m1, hm1⟩ := exists_isLatest (hr.wf.nonempty .curSeq)
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.1
+      (h.atomVal _ (by simp [Loc.IsChunk]) m1 hm1.1)
+    obtain ⟨m2, 𝓥, 𝓝, -, -, -, hs⟩ := sender_update hr (by simp only [sprog, hpc]; rfl) hm1 hv
+    obtain ⟨c', h1, h2, h3⟩ := pub (hr.stepL hs) ⟨v, by simp⟩
+    exact ⟨c', .head hs h1, h2, fun r => by simpa using h3 r⟩
+  have own : ∀ {c : Cfg ρ}, Reach N M pay ln c → c.s.pc = .own k b j →
+      ∃ c', Run N M pay ln c c' ∧
+        (c'.s.pc = (if b then .spin k j else .start (k + 1))) ∧ (∀ r, c'.r r = c.r r) := by
+    intro c hr hpc
+    obtain ⟨m, 𝓥, 𝓝, -, -, hs⟩ := sender_write hr (by simp only [sprog, hpc]; rfl)
+    obtain ⟨c', h1, h2, h3⟩ := fadd (hr.stepL hs) (by simp)
+    exact ⟨c', .head hs h1, h2, fun r => by simpa using h3 r⟩
+  have len : ∀ {c : Cfg ρ}, Reach N M pay ln c → c.s.pc = .len k b j →
+      ∃ c', Run N M pay ln c c' ∧
+        (c'.s.pc = (if b then .spin k j else .start (k + 1))) ∧ (∀ r, c'.r r = c.r r) := by
+    intro c hr hpc
+    obtain ⟨m, 𝓥, 𝓝, -, -, hs⟩ := sender_write hr (by simp only [sprog, hpc]; rfl)
+    obtain ⟨c', h1, h2, h3⟩ := own (hr.stepL hs) (by simp)
+    exact ⟨c', .head hs h1, h2, fun r => by simpa using h3 r⟩
+  have chunk : ∀ {c : Cfg ρ}, Reach N M pay ln c → c.s.pc = .chunk k b j →
+      ∃ c', Run N M pay ln c c' ∧
+        (c'.s.pc = (if b then .spin k j else .start (k + 1))) ∧ (∀ r, c'.r r = c.r r) := by
+    intro c hr hpc
+    obtain ⟨m, 𝓥, 𝓝, -, -, hs⟩ := sender_write hr (by simp only [sprog, hpc]; rfl)
+    obtain ⟨c', h1, h2, h3⟩ := len (hr.stepL hs) (by simp)
+    exact ⟨c', .head hs h1, h2, fun r => by simpa using h3 r⟩
+  rcases hpc with hpc | hpc | hpc | hpc | hpc
+  · exact chunk hr hpc
+  · exact len hr hpc
+  · exact own hr hpc
+  · exact fadd hr hpc
+  · exact pub hr hpc
+
+/-- A waiting sender sees its buffer released. -/
+theorem sender_unspin {c : Cfg ρ} (hr : Reach N M pay ln c) {k i : ℕ}
+    (hpc : c.s.pc = .spin k i) (hfree : LatestIs (c.mem (.own i)) 0) :
+    ∃ c1 : Cfg ρ, StepL (prog N M pay ln) c c1 ∧ c1.s.pc = .start (k + 1) ∧ ∀ r, c1.r r = c.r r := by
+  obtain ⟨o, ho, hov⟩ := hfree
+  obtain ⟨𝓥, 𝓝, hs⟩ := sender_read hr (by simp only [sprog, hpc]; rfl) ho
+  exact ⟨_, hs, by simp [hov], fun r => by simp⟩
+
+end Sender
+
 end Mempipe
