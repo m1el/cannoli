@@ -2,6 +2,9 @@ name = "mempipe-model"
 version = "0.1.0"
 defaultTargets = ["ORC11", "Mempipe"]
 
+[leanOptions]
+autoImplicit = false
+
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"
