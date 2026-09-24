@@ -1,4 +1,5 @@
 import Mempipe
+import ORC11
 
 -- Entrypoints whose axiom dependencies form the review boundary.
 #print axioms Mempipe.no_race
@@ -18,3 +19,5 @@ import Mempipe
 #print axioms ORC11.RC11.Exec.replay
 #print axioms Mempipe.disciplined
 #print axioms Mempipe.rc11_safe
+#print axioms ORC11.Mixed.mixed_orc11_safe
+#print axioms ORC11.Mixed.mixed_rc11_racy

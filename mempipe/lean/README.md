@@ -102,8 +102,12 @@ Coq ORC11 lets an acquire load of a *relaxed* store count that store as seen
 by a later non-atomic access. The relaxed store's message view carries its own
 atomic-write id. RC11 calls this a race, since there is no `sw` without a
 release, but ORC11 does not. The appendix's Lemma 7, case (2)(b), overlooks
-this. mempipe is disciplined (`Mempipe.disciplined`: chunks are only accessed
-non-atomically), so:
+this. `ORC11/Mixed.lean` checks a counterexample to the appendix's Theorem 1:
+T1 does `x.store(1, Relaxed)`, and T2 does
+`if x.load(Acquire) == 1 { non-atomic read of x }`. There is an RC11-consistent
+racy execution (`mixed_rc11_racy`), but no reachable ORC11 configuration is
+racy (`mixed_orc11_safe`). mempipe is disciplined (`Mempipe.disciplined`:
+chunks are only accessed non-atomically), so:
 
 ```lean
 theorem Mempipe.rc11_safe (G : RC11.Exec (prog N M pay ln) init0 initVal) (hc : G.Consistent) :
@@ -167,6 +171,7 @@ proof of correspondence.
 | `ORC11/Steps.lean` | thread steps reading a chosen message or writing at a chosen time |
 | `ORC11/RC11.lean` | RC11 execution graphs, consistency, races, basic lemmas |
 | `ORC11/Replay.lean` | RC11 ⇒ ORC11 for location-disciplined pools |
+| `ORC11/Mixed.lean` | without discipline it fails: RC11-racy but ORC11-safe |
 | `ORC11/Wf.lean` | closed, well-formed views and messages (`WfInv`); latest steps (`TStepL`, `StepL`) and their existence |
 | `Mempipe/Program.lean` | the sender and receiver programs, initial memory, the pool |
 | `Mempipe/Invariant.lean` | the safety invariant `Inv` and its initial case |
