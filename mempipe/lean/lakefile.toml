@@ -1,0 +1,16 @@
+name = "mempipe-model"
+version = "0.1.0"
+defaultTargets = ["ORC11", "Mempipe"]
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.34.0"
+
+# Lean port of the ORC11 operational memory model (gpfsl orc11/)
+[[lean_lib]]
+name = "ORC11"
+
+# The mempipe protocol and its proofs, on top of ORC11
+[[lean_lib]]
+name = "Mempipe"
