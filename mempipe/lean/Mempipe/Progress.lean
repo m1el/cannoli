@@ -397,10 +397,10 @@ theorem recv_release {c : Cfg ρ} (hr : Reach N M pay ln c) {r : ρ} {t : ℤ} {
     (hpc : (c.r r).pc = .rel t j) :
     ∃ c1 : Cfg ρ, StepL (prog N M pay ln) c c1 ∧ (c1.r r).pc = .init ∧ c1.s = c.s ∧
       (∀ r', r' ≠ r → c1.r r' = c.r r') ∧ LatestIs (c1.mem (.own j)) 0 ∧
-      ∀ l, l ≠ .own j → c1.mem l = c.mem l := by
+      (∀ l, l ≠ .own j → c1.mem l = c.mem l) ∧ (c1.r r).log = (c.r r).log := by
   obtain ⟨m, 𝓥, 𝓝, hv, hlt, hs⟩ := recv_write hr (r := r) (by simp only [rprog, hpc]; rfl)
   refine ⟨_, hs, by simp, by simp, fun r' hr' => Cfg.setR_r_ne _ _ _ _ _ hr', ?_,
-    fun l hl => by simp [hl]⟩
+    fun l hl => by simp [hl], by simp⟩
   simp only [Cfg.setR_mem, Memory.add_self]
   exact latestIs_add_top hlt hv
 
@@ -409,14 +409,15 @@ theorem recv_ticket {c : Cfg ρ} (hr : Reach N M pay ln c) {r : ρ}
     (hpc : (c.r r).pc = .init) :
     ∃ (c1 : Cfg ρ) (m1 : MsgT) (τ : ℤ), IsLatest (c.mem .tick) m1 ∧ m1.val = some τ ∧
       StepL (prog N M pay ln) c c1 ∧ (c1.r r).pc = .scan τ 0 ∧ c1.s = c.s ∧
-      (∀ r', r' ≠ r → c1.r r' = c.r r') ∧ ∀ l, l ≠ .tick → c1.mem l = c.mem l := by
+      (∀ r', r' ≠ r → c1.r r' = c.r r') ∧ (∀ l, l ≠ .tick → c1.mem l = c.mem l) ∧
+      (c1.r r).log = (c.r r).log := by
   have h := reach_inv N M pay ln hr
   obtain ⟨m1, hm1⟩ := exists_isLatest (hr.wf.nonempty .tick)
   obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.1 (h.atomVal _ (by simp [Loc.IsChunk]) m1 hm1.1)
   obtain ⟨m2, 𝓥, 𝓝, -, -, -, hs⟩ :=
     recv_update hr (r := r) (by simp only [rprog, hpc]; rfl) hm1 hτ
   exact ⟨_, m1, τ, hm1, hτ, hs, by simp, by simp, fun r' hr' => Cfg.setR_r_ne _ _ _ _ _ hr',
-    fun l hl => by simp [hl]⟩
+    fun l hl => by simp [hl], by simp⟩
 
 end Receivers2
 
@@ -520,5 +521,342 @@ theorem sender_unspin {c : Cfg ρ} (hr : Reach N M pay ln c) {k i : ℕ}
   exact ⟨_, hs, by simp [hov], fun r => by simp⟩
 
 end Sender
+
+/-! ## Delivering the messages in order -/
+
+section Deliver
+
+variable {N M pay ln}
+
+theorem consumed_run {c c' : Cfg ρ} (hr : Reach N M pay ln c) (h : Run N M pay ln c c')
+    {v : ℤ} (hv : Consumed c v) : Consumed c' v := by
+  induction h with
+  | refl => exact hv
+  | @tail c1 c2 h12 hs ih =>
+    exact consumed_step N M pay ln (hr.run h12) hs.toStep ih
+
+theorem PhaseOK.pub_rel {c : Cfg ρ} {j s : ℕ} (h : PhaseOK pay ln c j (.pub s))
+    (hc : Consumed c (s : ℤ)) : ∃ r, (c.r r).pc = .rel (s : ℤ) j :=
+  let ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, hrel⟩ := h; hrel hc
+
+/-- A consumed ticket was handed out. -/
+theorem Inv.issued_of_consumed {c : Cfg ρ} (h : Inv pay ln c) {t : ℤ}
+    (hc : Consumed c t) : Issued c t := by
+  obtain ⟨r, hr⟩ := hc
+  obtain ⟨-, m, hm, hmv⟩ := h.rTix r t (tix_log hr)
+  exact ⟨m, hm, hmv⟩
+
+/-- Tickets are handed out in order. -/
+theorem Inv.issued_lt {c : Cfg ρ} (h : Inv pay ln c) {t s : ℤ} (hs : 0 ≤ s)
+    (ht : Issued c t) (hns : ¬ Issued c s) : t < s := by
+  by_contra hle
+  obtain ⟨m, hm, hmv⟩ := ht
+  have hval := h.tickVal m hm
+  rw [hmv, Option.some.injEq] at hval
+  obtain ⟨m', hm', ht'⟩ := h.tickDown m hm (s.toNat + 2) (by omega) (by omega)
+  have hval' := h.tickVal m' hm'
+  exact hns ⟨m', hm', by rw [hval', ht']; congr 1; omega⟩
+
+/-- An unconsumed published sequence number has its buffer. -/
+theorem live_pub (hN : 0 < N) {c : Cfg ρ} (hr : Reach N M pay ln c) {s : ℕ}
+    (hs : s < c.s.pc.npub) (hnc : ¬ Consumed c (s : ℤ)) :
+    ∃ j, j < N ∧ PhaseOK pay ln c j (.pub s) := by
+  have h := reach_inv N M pay ln hr
+  obtain ⟨j, hjN, q, hq, hqv⟩ := (reach_pinv N M pay ln hN hr).live s hs hnc
+  refine ⟨j, hjN, ?_⟩
+  have hno : NoLive c j → False := fun hnl => by
+    rcases hnl q hq.1 _ hqv with h1 | h1
+    · rw [NO_SEQ] at h1; omega
+    · exact hnc h1
+  obtain ⟨ph, hph⟩ := h.phase j
+  match ph, hph with
+  | .free, hph' => exact (hno hph'.2.2.2.1).elim
+  | .fill, hph' => exact (hno hph'.2.2.1).elim
+  | .sealing, hph' => exact (hno hph'.2.2.1).elim
+  | .pub s', hph' =>
+    have := LatestIs.unique (h.gen.uniq _) hph'.pub_cseq ⟨q, hq, hqv⟩
+    have : s' = s := by omega
+    rw [this] at hph'; exact hph'
+
+/-- Free a buffer the sender is not working on, if all published messages are
+consumed. -/
+theorem free_buffer {c : Cfg ρ} (hr : Reach N M pay ln c) {j : ℕ}
+    (hf : c.s.pc.fill ≠ some j) (hsl : c.s.pc.sealing ≠ some j)
+    (hall : ∀ k < c.s.pc.npub, Consumed c (k : ℤ)) :
+    ∃ c', Run N M pay ln c c' ∧ c'.s = c.s ∧ LatestIs (c'.mem (.own j)) 0 := by
+  have h := reach_inv N M pay ln hr
+  rcases h.free_or_pub j hf hsl with hfr | ⟨s, hph⟩
+  · exact ⟨c, .refl, rfl, hfr.free_own⟩
+  · obtain ⟨r, hrel⟩ := hph.pub_rel (hall s hph.2.2.1)
+    obtain ⟨c1, hs1, -, hss, -, hlat, -, -⟩ := recv_release hr hrel
+    exact ⟨c1, .single hs1, hss, hlat⟩
+
+/-- The sender publishes message `s`, if all earlier ones are consumed. -/
+theorem ensure_published (hN : 0 < N) {c : Cfg ρ} (hr : Reach N M pay ln c) {s : ℕ}
+    (hsM : s < M) (hall : ∀ k < s, Consumed c (k : ℤ)) :
+    ∃ c', Run N M pay ln c c' ∧ s < c'.s.pc.npub := by
+  have h := reach_inv N M pay ln hr
+  have hidx := reach_idx N M pay ln hN hr
+  -- the sender is at `s` at least
+  have hge : s ≤ c.s.pc.npub := by
+    rcases Nat.eq_zero_or_pos s with rfl | hs0
+    · exact Nat.zero_le _
+    · obtain ⟨r, hr'⟩ := hall (s - 1) (by omega)
+      obtain ⟨e, he, he1⟩ := List.mem_map.1 hr'
+      have := (h.rLog r e he).2.1
+      rw [he1] at this; omega
+  rcases Nat.lt_or_ge s c.s.pc.npub with hlt | hle
+  · exact ⟨c, .refl, hlt⟩
+  have hnp : c.s.pc.npub = s := le_antisymm hle hge
+  have hall' : ∀ k < c.s.pc.npub, Consumed c (k : ℤ) := fun k hk => hall k (hnp ▸ hk)
+  -- publishing from a state that took a buffer
+  have fin : ∀ {c : Cfg ρ}, Reach N M pay ln c → ∀ b j, (c.s.pc = .chunk s b j ∨
+      c.s.pc = .len s b j ∨ c.s.pc = .own s b j ∨ c.s.pc = .fadd s b j ∨
+      ∃ s', c.s.pc = .pub s b j s') → ∃ c', Run N M pay ln c c' ∧ s < c'.s.pc.npub := by
+    intro c hr b j hpc
+    obtain ⟨c', hrun, hpc', -⟩ := sender_publish hr hpc
+    refine ⟨c', hrun, ?_⟩
+    rw [hpc']; cases b <;> simp [SPc.npub, SPc.k]
+  -- from `alloc`
+  have alloc : ∀ {c : Cfg ρ}, Reach N M pay ln c → ∀ b i, c.s.pc = .alloc s b i → i < N →
+      (∀ k < c.s.pc.npub, Consumed c (k : ℤ)) →
+      ∃ c', Run N M pay ln c c' ∧ s < c'.s.pc.npub := by
+    intro c hr b i hpc hi hall
+    obtain ⟨c1, hrun1, hss, hfree⟩ := free_buffer hr (j := 0) (by simp [hpc, SPc.fill])
+      (by simp [hpc, SPc.sealing]) hall
+    have hr1 := hr.run hrun1
+    obtain ⟨c2, i', hrun2, hpc2, -⟩ := sender_alloc hN hN (dist N i 0) hr1
+      (by rw [hss, hpc]) hi hfree le_rfl
+    obtain ⟨c3, hrun3, h3⟩ := fin (hr1.run hrun2) b i' (Or.inl hpc2)
+    exact ⟨c3, hrun1.trans (hrun2.trans hrun3), h3⟩
+  -- from `start`
+  have start : ∀ {c : Cfg ρ}, Reach N M pay ln c → c.s.pc = .start s →
+      (∀ k < c.s.pc.npub, Consumed c (k : ℤ)) →
+      ∃ c', Run N M pay ln c c' ∧ s < c'.s.pc.npub := by
+    intro c hr hpc hall
+    have hs1 := sender_choose (N := N) (M := M) (pay := pay) (ln := ln) (c := c)
+      (by simp [sprog, hpc, hsM]; rfl) false
+    obtain ⟨c', h1, h2⟩ := alloc (hr.stepL hs1) false 0 (by simp) hN
+      (by simpa [hpc, SPc.npub, SPc.k] using hall)
+    exact ⟨c', .head hs1 h1, h2⟩
+  cases hpc : c.s.pc with
+  | start k =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this; exact start hr hpc hall'
+  | alloc k b i =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this
+    have := hidx.1; rw [hpc] at this
+    exact alloc hr b i hpc this.2 hall'
+  | chunk k b i =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this; exact fin hr b i (Or.inl hpc)
+  | len k b i =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this; exact fin hr b i (Or.inr (Or.inl hpc))
+  | own k b i =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this; exact fin hr b i (Or.inr (Or.inr (Or.inl hpc)))
+  | fadd k b i =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this; exact fin hr b i (Or.inr (Or.inr (Or.inr (Or.inl hpc))))
+  | pub k b i s' =>
+    have : k = s := by rw [← hnp, hpc]; rfl
+    subst this; exact fin hr b i (Or.inr (Or.inr (Or.inr (Or.inr ⟨s', hpc⟩))))
+  | spin k i =>
+    -- the sender waits for message `k = s - 1`, which is consumed
+    have hks : k + 1 = s := by rw [← hnp, hpc]; rfl
+    obtain ⟨c1, hrun1, hss, hfree⟩ := free_buffer hr (j := i) (by simp [hpc, SPc.fill])
+      (by simp [hpc, SPc.sealing]) hall'
+    have hr1 := hr.run hrun1
+    obtain ⟨c2, hs2, hpc2, -⟩ := sender_unspin hr1 (by rw [hss, hpc]) hfree
+    have hr2 := hr1.stepL hs2
+    rw [hks] at hpc2
+    obtain ⟨c3, h3, h3'⟩ := start hr2 hpc2 (fun k hk => by
+      rw [hpc2] at hk; simp [SPc.npub, SPc.k] at hk
+      exact consumed_run hr (hrun1.trans (.single hs2)) (hall k hk))
+    exact ⟨c3, hrun1.trans (.head hs2 h3), h3'⟩
+  | fault => exact absurd hpc h.sFault
+
+end Deliver
+
+section Deliver2
+
+variable {N M pay ln}
+
+/-- Some receiver takes ticket `s`, if all earlier ones are consumed. -/
+theorem ensure_ticket (hN : 0 < N) [Nonempty ρ] {c : Cfg ρ} (hr : Reach N M pay ln c) {s : ℕ}
+    (hall : ∀ k < s, Consumed c (k : ℤ)) (hnc : ¬ Consumed c (s : ℤ)) :
+    ∃ c' r, Run N M pay ln c c' ∧ (s : ℤ) ∈ (c'.r r).pc.held ∧ c'.s = c.s ∧
+      ¬ Consumed c' (s : ℤ) := by
+  have h := reach_inv N M pay ln hr
+  by_cases hheld : ∃ r, (s : ℤ) ∈ (c.r r).pc.held
+  · obtain ⟨r, hr'⟩ := hheld
+    exact ⟨c, r, .refl, hr', rfl, hnc⟩
+  push_neg at hheld
+  -- ticket `s` was not handed out yet
+  have hni : ¬ Issued c (s : ℤ) := by
+    intro hi
+    obtain ⟨r, hr'⟩ := (reach_pinv N M pay ln hN hr).issued s (by omega) hi
+    rcases List.mem_append.1 hr' with h1 | h1
+    · exact hheld r h1
+    · exact hnc ⟨r, h1⟩
+  -- so any receiver holds no ticket
+  obtain ⟨r0⟩ := ‹Nonempty ρ›
+  have hfree : ∀ t, t ∉ (c.r r0).pc.held := by
+    intro t ht
+    have ht0 := h.ticket_nonneg pay ln ht
+    obtain ⟨-, m, hm, hmv⟩ := h.rTix r0 t (tix_held ht)
+    have hlt := h.issued_lt (by omega) ⟨m, hm, hmv⟩ hni
+    exact h.held_not_consumed pay ln ht
+      (by have := hall t.toNat (by omega); rwa [Int.toNat_of_nonneg ht0] at this)
+  -- bring it to `request_ticket`
+  obtain ⟨c1, hrun1, hpc1, hss1, hoth1, htick1, hlog1⟩ : ∃ c1 : Cfg ρ, Run N M pay ln c c1 ∧
+      (c1.r r0).pc = .init ∧ c1.s = c.s ∧ (∀ r', r' ≠ r0 → c1.r r' = c.r r') ∧
+      c1.mem .tick = c.mem .tick ∧ (c1.r r0).log = (c.r r0).log := by
+    cases hpc : (c.r r0).pc with
+    | init => exact ⟨c, .refl, hpc, rfl, fun _ _ => rfl, rfl, rfl⟩
+    | rel t j =>
+      obtain ⟨c1, hs1, h1, h2, h3, -, h5, h6⟩ := recv_release hr hpc
+      exact ⟨c1, .single hs1, h1, h2, h3, h5 _ (by simp), h6⟩
+    | fault => exact absurd hpc (h.rFault r0)
+    | scan t _ | own t _ | len t _ | chunk t _ _ | cb t _ _ _ =>
+      exact absurd (by simp [hpc, RPc.held]) (hfree t)
+  have hr1 := hr.run hrun1
+  have h1 := reach_inv N M pay ln hr1
+  obtain ⟨c2, m1, τ, hm1, hτ, hs2, hpc2, hss2, hoth2, -, hlog2⟩ := recv_ticket hr1 hpc1
+  -- the ticket it takes is `s`
+  have hτs : τ = s := by
+    have hval := h1.tickVal m1 hm1.1
+    rw [hτ, Option.some.injEq] at hval
+    have hpos := h1.gen.pos _ m1 hm1.1
+    apply le_antisymm
+    · by_contra hlt
+      obtain ⟨m', hm', ht'⟩ := h1.tickDown m1 hm1.1 (s + 2) (by omega) (by omega)
+      have hval' := h1.tickVal m' hm'
+      exact hni ⟨m', by rwa [← htick1], by rw [hval', ht']; congr 1; omega⟩
+    · rcases Nat.eq_zero_or_pos s with hs0 | hs0
+      · rw [hs0]; push_cast; omega
+      · obtain ⟨m, hm, hmv⟩ := h.issued_of_consumed (hall (s - 1) (by omega))
+        rw [← htick1] at hm
+        have := h1.tickVal m hm
+        rw [hmv, Option.some.injEq] at this
+        have := hm1.2 m hm
+        omega
+  subst hτs
+  refine ⟨c2, r0, hrun1.trans (.single hs2), by simp [hpc2, RPc.held], hss2.trans hss1, ?_⟩
+  -- nobody logged anything
+  rintro ⟨r, hr'⟩
+  by_cases hrr : r = r0
+  · subst hrr
+    exact hnc ⟨r, by rwa [hlog2, hlog1] at hr'⟩
+  · exact hnc ⟨r, by rwa [hoth2 r hrr, hoth1 r hrr] at hr'⟩
+
+end Deliver2
+
+theorem RPc.ticket_of_held {pc : RPc} {t : ℤ} (h : t ∈ pc.held) : pc.ticket = some t := by
+  cases pc <;> simp_all [RPc.held, RPc.ticket]
+
+section Deliver3
+
+variable {N M pay ln}
+
+/-- Deliver message `s`, if all earlier ones are consumed. -/
+theorem deliver (hN : 0 < N) [Nonempty ρ] {c : Cfg ρ} (hr : Reach N M pay ln c) {s : ℕ}
+    (hsM : s < M) (hall : ∀ k < s, Consumed c (k : ℤ)) :
+    ∃ c', Run N M pay ln c c' ∧ ∀ k < s + 1, Consumed c' (k : ℤ) := by
+  have done : ∀ c', Run N M pay ln c c' → Consumed c' (s : ℤ) →
+      ∀ k < s + 1, Consumed c' (k : ℤ) := by
+    intro c' hrun hc k hk
+    rcases Nat.lt_or_ge k s with hks | hks
+    · exact consumed_run hr hrun (hall k hks)
+    · have : k = s := by omega
+      subst this; exact hc
+  by_cases hc : Consumed c (s : ℤ)
+  · exact ⟨c, .refl, done c .refl hc⟩
+  -- publish `s`
+  obtain ⟨c1, hrun1, hpub1⟩ := ensure_published hN hr hsM hall
+  have hr1 := hr.run hrun1
+  have hall1 : ∀ k < s, Consumed c1 (k : ℤ) := fun k hk => consumed_run hr hrun1 (hall k hk)
+  by_cases hc1 : Consumed c1 (s : ℤ)
+  · exact ⟨c1, hrun1, done c1 hrun1 hc1⟩
+  -- hand out ticket `s`
+  obtain ⟨c2, r, hrun2, hheld, hss2, hnc2⟩ := ensure_ticket hN hr1 hall1 hc1
+  have hr2 := hr1.run hrun2
+  obtain ⟨j, hjN, hph⟩ := live_pub hN hr2 (by rw [hss2]; exact hpub1) hnc2
+  -- its holder accepts the buffer
+  obtain ⟨c3, hrun3, hpc3, -, -⟩ := recv_to_rel hN _ hr2 hph hjN
+    ((reach_idx N M pay ln hN hr2).2 r) (RPc.ticket_of_held hheld) le_rfl
+  have hr3 := hr2.run hrun3
+  have hrun : Run N M pay ln c c3 := hrun1.trans (hrun2.trans hrun3)
+  exact ⟨c3, hrun, done c3 hrun ⟨r, (reach_inv N M pay ln hr3).rRel r _ j hpc3⟩⟩
+
+/-- Once every message is consumed, the sender finishes. -/
+theorem finish (hN : 0 < N) {c : Cfg ρ} (hr : Reach N M pay ln c)
+    (hall : ∀ k < M, Consumed c (k : ℤ)) :
+    ∃ c', Run N M pay ln c c' ∧ c'.s.pc = .start M := by
+  have h := reach_inv N M pay ln hr
+  have hidx := (reach_idx N M pay ln hN hr).1
+  have hge : M ≤ c.s.pc.npub := by
+    rcases Nat.eq_zero_or_pos M with hM | hM
+    · omega
+    · obtain ⟨r, hr'⟩ := hall (M - 1) (by omega)
+      obtain ⟨e, he, he1⟩ := List.mem_map.1 hr'
+      have := (h.rLog r e he).2.1
+      rw [he1] at this; omega
+  cases hpc : c.s.pc with
+  | start k =>
+    rw [hpc] at hidx hge; simp only [SPc.Idx] at hidx; simp only [SPc.npub, SPc.k] at hge
+    have : k = M := by omega
+    subst this; exact ⟨c, .refl, hpc⟩
+  | spin k i =>
+    rw [hpc] at hidx hge; simp only [SPc.Idx] at hidx; simp only [SPc.npub] at hge
+    have hkM : k + 1 = M := by omega
+    obtain ⟨c1, hrun1, hss, hfree⟩ := free_buffer hr (j := i) (by simp [hpc, SPc.fill])
+      (by simp [hpc, SPc.sealing])
+      (fun k' hk' => hall k' (by rw [hpc] at hk'; simp [SPc.npub] at hk'; omega))
+    obtain ⟨c2, hs2, hpc2, -⟩ := sender_unspin (hr.run hrun1) (by rw [hss, hpc]) hfree
+    exact ⟨c2, hrun1.tail hs2, by rw [hpc2, hkM]⟩
+  | alloc k b i | chunk k b i | len k b i | own k b i | fadd k b i | pub k b i _ =>
+    rw [hpc] at hidx hge; simp only [SPc.Idx] at hidx; simp only [SPc.npub, SPc.k] at hge
+    omega
+  | fault => exact absurd hpc h.sFault
+
+end Deliver3
+
+/-! ## No stranding -/
+
+/-- **No stranding.** For at least one buffer and one receiver, from every
+reachable configuration there is a continuation of latest steps (every load
+reads the latest write, every store goes last) after which the sender has
+sent all `M` messages and every message `k < M` has been accepted by some
+receiver, with its payload and length. -/
+theorem progress (hN : 0 < N) [Nonempty ρ] {c : Cfg ρ} (hr : Reach N M pay ln c) :
+    ∃ c' : Cfg ρ, Relation.ReflTransGen (StepL (prog N M pay ln)) c c' ∧
+      c'.s.pc = .start M ∧ ∀ k < M, ∃ r, ((k : ℤ), pay k, ln k) ∈ (c'.r r).log := by
+  have key : ∀ s ≤ M, ∃ c', Run N M pay ln c c' ∧ ∀ k < s, Consumed c' (k : ℤ) := by
+    intro s
+    induction s with
+    | zero => exact fun _ => ⟨c, .refl, fun k hk => absurd hk (Nat.not_lt_zero _)⟩
+    | succ s ih =>
+      intro hs
+      obtain ⟨c1, hrun1, hall1⟩ := ih (by omega)
+      obtain ⟨c2, hrun2, hall2⟩ := deliver hN (hr.run hrun1) (by omega) hall1
+      exact ⟨c2, hrun1.trans hrun2, hall2⟩
+  obtain ⟨c1, hrun1, hall1⟩ := key M le_rfl
+  have hr1 := hr.run hrun1
+  obtain ⟨c2, hrun2, hpc2⟩ := finish hN hr1 hall1
+  have hr2 := hr1.run hrun2
+  have h2 := reach_inv N M pay ln hr2
+  refine ⟨c2, hrun1.trans hrun2, hpc2, fun k hk => ?_⟩
+  obtain ⟨r, hr'⟩ := consumed_run hr1 hrun2 (hall1 k hk)
+  obtain ⟨e, he, he1⟩ := List.mem_map.1 hr'
+  obtain ⟨-, -, e3, e4⟩ := h2.rLog r e he
+  refine ⟨r, ?_⟩
+  obtain ⟨a, b, d⟩ := e
+  simp only at he1 e3 e4
+  subst he1
+  simp only [Int.toNat_natCast] at e3 e4
+  rw [e3, e4] at he; exact he
 
 end Mempipe

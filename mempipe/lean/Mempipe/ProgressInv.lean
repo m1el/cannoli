@@ -22,7 +22,7 @@ def Issued (c : Cfg ρ) (t : ℤ) : Prop := ∃ m ∈ c.mem .tick, m.val = some 
 
 structure PInv (c : Cfg ρ) : Prop where
   live : ∀ s : ℕ, s < c.s.pc.npub → ¬ Consumed c (s : ℤ) →
-    ∃ j, LatestIs (c.mem (.cseq j)) (s : ℤ)
+    ∃ j, j < N ∧ LatestIs (c.mem (.cseq j)) (s : ℤ)
   issued : ∀ t : ℤ, 0 ≤ t → Issued c t → ∃ r, t ∈ tix (c.r r)
   spin : ∀ k i, c.s.pc = .spin k i → LatestIs (c.mem (.cseq i)) (k : ℤ)
 
@@ -144,7 +144,7 @@ theorem consumed_step {c c' : Cfg ρ} (hr : Reach N M pay ln c)
     exact consumed_setR (recv_facts N hst (by simpa using hc'.rFault r0)).2.2.1 h
 
 omit [DecidableEq ρ] in
-theorem pinv_init : PInv (initConfig init0 initVal : Cfg ρ) where
+theorem pinv_init : PInv N (initConfig init0 initVal : Cfg ρ) where
   live s hs := by simp [SPc.npub, SPc.k] at hs
   issued t ht hi := by
     obtain ⟨m, hm, hv⟩ := hi
@@ -152,8 +152,9 @@ theorem pinv_init : PInv (initConfig init0 initVal : Cfg ρ) where
     simp [initVal] at hv; omega
   spin k i h := by simp at h
 
-theorem pinv_step {c c' : Cfg ρ} (h : Inv pay ln c) (h' : Inv pay ln c') (hp : PInv c)
-    (hs : Step (prog N M pay ln) c c') : PInv c' := by
+theorem pinv_step {c c' : Cfg ρ} (h : Inv pay ln c) (h' : Inv pay ln c')
+    (hidx : IdxInv N M c) (hp : PInv N c)
+    (hs : Step (prog N M pay ln) c c') : PInv N c' := by
   rcases step_cases N M pay ln hs with ⟨σ, 𝓥, M', 𝓝', hst, rfl⟩ | ⟨r0, σ, 𝓥, M', 𝓝', hst, rfl⟩
   · obtain ⟨htick, hcase⟩ := sender_facts N M pay ln h hst (by simpa using h'.sFault)
     refine ⟨?_, ?_, ?_⟩
@@ -161,13 +162,15 @@ theorem pinv_step {c c' : Cfg ρ} (h : Inv pay ln c) (h' : Inv pay ln c') (hp : 
       rw [consumed_setS] at hnc
       simp only [Cfg.setS_s, Cfg.setS_mem] at hs ⊢
       rcases hcase with ⟨hq, hnp, -⟩ | ⟨k, b, j, hpc, hnp, hlat, hq, -⟩
-      · obtain ⟨j, hj⟩ := hp.live s (hnp ▸ hs) hnc
-        exact ⟨j, by rw [hq]; exact hj⟩
+      · obtain ⟨j, hjN, hj⟩ := hp.live s (hnp ▸ hs) hnc
+        exact ⟨j, hjN, by rw [hq]; exact hj⟩
       · by_cases hsk : s = k
-        · subst hsk; exact ⟨j, hlat⟩
+        · subst hsk
+          have := hidx.1; rw [hpc] at this
+          exact ⟨j, this.2, hlat⟩
         · have hs' : s < c.s.pc.npub := by
             rw [hnp] at hs; simp [hpc, SPc.npub, SPc.k]; omega
-          obtain ⟨j', hj'⟩ := hp.live s hs' hnc
+          obtain ⟨j', hj'N, hj'⟩ := hp.live s hs' hnc
           by_cases hjj : j' = j
           · -- buffer `j` was being sealed, so its old sequence numbers are consumed
             subst hjj
@@ -183,7 +186,7 @@ theorem pinv_step {c c' : Cfg ρ} (h : Inv pay ln c) (h' : Inv pay ln c') (hp : 
             rcases hnl q hq'.1 _ hqv with h1 | h1
             · rw [NO_SEQ] at h1; omega
             · exact hnc h1
-          · exact ⟨j', by rw [hq j' hjj]; exact hj'⟩
+          · exact ⟨j', hj'N, by rw [hq j' hjj]; exact hj'⟩
     · intro t ht hi
       obtain ⟨m, hm, hv⟩ := hi
       simp only [Cfg.setS_mem, htick] at hm
@@ -198,8 +201,8 @@ theorem pinv_step {c c' : Cfg ρ} (h : Inv pay ln c) (h' : Inv pay ln c') (hp : 
     refine ⟨?_, ?_, ?_⟩
     · intro s hs hnc
       simp only [Cfg.setR_s, Cfg.setR_mem] at hs ⊢
-      obtain ⟨j, hj⟩ := hp.live s hs (fun h' => hnc (consumed_setR hlog h'))
-      exact ⟨j, by rw [hq]; exact hj⟩
+      obtain ⟨j, hjN, hj⟩ := hp.live s hs (fun h' => hnc (consumed_setR hlog h'))
+      exact ⟨j, hjN, by rw [hq]; exact hj⟩
     · intro t ht hi
       obtain ⟨m, hm, hv⟩ := hi
       simp only [Cfg.setR_mem] at hm
@@ -217,10 +220,11 @@ theorem pinv_step {c c' : Cfg ρ} (h : Inv pay ln c) (h' : Inv pay ln c') (hp : 
       simp only [Cfg.setR_s, Cfg.setR_mem] at hk ⊢
       rw [hq]; exact hp.spin k i hk
 
-theorem reach_pinv {c : Cfg ρ} (hr : Reach N M pay ln c) : PInv c := by
+theorem reach_pinv (hN : 0 < N) {c : Cfg ρ} (hr : Reach N M pay ln c) : PInv N c := by
   induction hr with
-  | refl => exact pinv_init
+  | refl => exact pinv_init N
   | @tail c1 c2 hr1 hs ih =>
-    exact pinv_step N M pay ln (reach_inv N M pay ln hr1) (reach_inv N M pay ln (hr1.tail hs)) ih hs
+    exact pinv_step N M pay ln (reach_inv N M pay ln hr1) (reach_inv N M pay ln (hr1.tail hs))
+      (reach_idx N M pay ln hN hr1) ih hs
 
 end Mempipe
