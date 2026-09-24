@@ -1,0 +1,11 @@
+[package]
+name = "mempipe-lean-model"
+version = "0.1.0"
+edition = "2021"
+description = "Rust rendering of the Lean model of mempipe, generated from the verified definitions"
+publish = false
+
+# Not part of the repository's workspace
+[workspace]
+
+[dependencies]

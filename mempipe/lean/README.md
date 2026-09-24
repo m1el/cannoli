@@ -77,6 +77,21 @@ latest-step interpreter (`ORC11/Exec.lean`, proved sound: `run?_reachable`),
 and the kernel checks them with `decide`. As controls, the same schedules
 with the code's orderings reach the same program points without a race.
 
+## Rust rendering of the model
+
+`rust/src/generated.rs` is the model's sender and receivers rendered as Rust
+state machines, one `step` arm per program-counter constructor, using the
+atomics and orderings of `mempipe/src/lib.rs`. It exists to read side by side
+with the real code. `tools/ToRust.lean` generates it from the elaborated
+definitions of `SPc`, `sprog`, `RPc` and `rprog`, not from their source text:
+it unfolds each program-counter case and prints the instruction, and it fails
+on anything outside the programs' fragment. `rust/src/lib.rs` is a
+hand-written mirror of `RawMemPipe`'s shared fields. `rust/tests/threads.rs`
+runs the state machines on real threads and checks the ghost logs; it also
+passes under `cargo miri test`. `scripts/gen_rust.sh --check` regenerates the
+file, fails if it was stale, and runs the tests. This is a translation, not a
+proof of correspondence.
+
 ## Layout
 
 | File | Contents |
