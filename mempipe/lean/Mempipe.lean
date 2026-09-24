@@ -5,3 +5,4 @@ import Mempipe.SenderStep
 import Mempipe.RecvStep
 import Mempipe.Safety
 import Mempipe.Idx
+import Mempipe.ProgressInv
