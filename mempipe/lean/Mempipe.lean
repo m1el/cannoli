@@ -6,3 +6,4 @@ import Mempipe.RecvStep
 import Mempipe.Safety
 import Mempipe.Idx
 import Mempipe.ProgressInv
+import Mempipe.Progress
