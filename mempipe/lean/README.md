@@ -122,6 +122,56 @@ theorem Mempipe.rc11_safe (G : RC11.Exec (prog N M pay ln) init0 initVal) (hc : 
 The graph can be any finite prefix of an execution, since a thread's items
 can stop anywhere, so these hold at every point of every RC11-consistent
 execution.
+### Checking the RC11 definitions
+
+The RC11 of `ORC11/RC11.lean` is written for this project, so it is checked
+against two independent RC11s.
+
+**IMM's Coq RC11.** `ORC11/IMM.lean` transcribes the RC11 of IMM
+([weakmemory/imm](https://github.com/weakmemory/imm), `src/rc11/RC11.v` and
+the files it uses). Each definition sits next to its Coq source line, and the
+`Wf` record keeps all 28 fields. `toIMM` translates our graphs into IMM
+executions: an update becomes a read and a write joined by `rmw`, with modes
+as IMM's own `ProgToExecution.v` assigns them.
+
+```lean
+theorem IMM.wf_toIMM (hwf : G.WF) : (toIMM G).Wf v0 none
+theorem IMM.consistent_of_rc11 (hwf : G.WF) (h : (toIMM G).rc11_consistent) : G.Consistent
+theorem IMM.consistent_iff (hwf : G.WF) (hA : G.LabDisc A) :
+    G.Consistent ↔ (toIMM G).rc11_consistent
+```
+
+IMM-consistent graphs are always consistent for us. The converse needs the
+location discipline, because IMM's release sequences
+`⦗W⦘ ⨾ (sb ∩ same_loc)^? ⨾ ⦗W⦘ ⨾ (rf ⨾ rmw)＊` let a non-atomic write continue
+one, where RC11 (and herd7's `rc11.cat`) requires an atomic write.
+`IMM.Counterexample.consistent_not_imm` checks a graph that is consistent for
+us but not for IMM:
+- T1: `y :=na 1; x :=rel 1; x :=na 2`
+- T2: `x.acq` reads 2, then `y` is read non-atomically and sees 0.
+
+**herd7's `rc11.cat`.** `ORC11/RC11Dec.lean` proves `Exec.Consistent` and
+`Exec.Racy` decidable when the locations are finite. The closures `eco`, `hb`
+and the release-sequence chains are computed by a Floyd–Warshall proved in
+`ORC11/Closure.lean`. `tools/Litmus.lean` enumerates the candidate executions
+of 38 straight-line litmus tests, keeps those where `decConsistent` says yes,
+and writes the same tests as C litmus files. The tests cover:
+- MP, SB, LB, 2+2W, CoRR/CoWR/CoRW, R, S, WRC, IRIW, ISA2;
+- fetch-add and exchange;
+- release sequences through RMWs and through `sb`, including the non-atomic
+  continuation above;
+- races between non-atomics, and between atomics and non-atomics.
+
+`scripts/litmus.sh` runs herd7 with `rc11.cat` on them and compares:
+- the number of consistent executions;
+- the set of final states (registers and memory);
+- herd7's `Dr` (undefined) flag against `decRacy`, for each test and for each
+  final state on its own, using a herd7 `filter`.
+
+All 38 tests and 251 herd7 runs agree (herdtools7 5f17865). Two mutations of
+`RC11.lean` each produce a mismatch:
+- releasing relaxed stores;
+- non-atomic release-sequence heads, as in IMM.
 
 ## The orderings are all needed
 
@@ -172,6 +222,9 @@ proof of correspondence.
 | `ORC11/RC11.lean` | RC11 execution graphs, consistency, races, basic lemmas |
 | `ORC11/Replay.lean` | RC11 ⇒ ORC11 for location-disciplined pools |
 | `ORC11/Mixed.lean` | without discipline it fails: RC11-racy but ORC11-safe |
+| `ORC11/IMM.lean` | IMM's Coq RC11, transcribed; our RC11 is equivalent to it under the discipline |
+| `ORC11/Closure.lean`, `ORC11/RC11Dec.lean` | proved Floyd–Warshall; deciding consistency and races |
+| `tools/Litmus.lean`, `scripts/litmus.sh` | litmus tests, compared with herd7's `rc11.cat` |
 | `ORC11/Wf.lean` | closed, well-formed views and messages (`WfInv`); latest steps (`TStepL`, `StepL`) and their existence |
 | `Mempipe/Program.lean` | the sender and receiver programs, initial memory, the pool |
 | `Mempipe/Invariant.lean` | the safety invariant `Inv` and its initial case |
@@ -269,4 +322,3 @@ Each definition cites the Coq definition it ports. Deviations:
 - Progress under RC11: the no-stranding theorem is stated for ORC11
   continuations of ORC11-reachable states. Every RC11 execution is such a
   state (`replay`), and the continuation itself is sequentially consistent.
-- Optional herdtools7 cross-check on small litmus tests.

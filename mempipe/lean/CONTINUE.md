@@ -42,7 +42,8 @@ Decisions and constraints:
   `recv_once`; `Mempipe/Progress.lean`: `progress`). `scripts/check_axioms.sh`
   passes (only propext / Classical.choice / Quot.sound). See `README.md` for
   statements, the invariant and the full list of deviations.
-- Subagents used so far: 1 of 3 (wrote `ORC11/Wf.lean`).
+- Subagents used so far: 3 of 3 (`ORC11/Wf.lean`, `ORC11/Mixed.lean`,
+  `ORC11/IMM.lean`). None remain.
 
 ## Next steps (remaining)
 
@@ -52,8 +53,13 @@ Decisions and constraints:
    (`ORC11/RC11.lean`, `ORC11/Replay.lean`, `Mempipe/RC11.lean`). Finding: the
    appendix's Theorem 1 fails for mixed-mode locations (Lemma 7 case (2)(b));
    a checked counterexample is `ORC11/Mixed.lean` (written by subagent 2 of 3).
-3. Optional herdtools7 cross-check (the interpreter `run?` can drive an
-   exhaustive explorer for small parameters).
+3. Done: the RC11 definitions are cross-checked.
+   - IMM: `ORC11/IMM.lean` transcribes IMM's Coq RC11 and proves
+     `consistent_iff` under the discipline. Without the discipline, IMM's
+     `rs` differs: `Counterexample.consistent_not_imm`.
+   - herd7: `rc11.cat` agrees on 38 litmus tests (`scripts/litmus.sh`,
+     decisions proved in `ORC11/RC11Dec.lean`). herd7 must be built from
+     herdtools7 (`make Version.ml`, then `dune build herd/herd.exe`).
 
 ## The protocol being verified (`mempipe/src/lib.rs` on main)
 

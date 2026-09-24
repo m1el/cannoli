@@ -9,3 +9,5 @@ import ORC11.RC11
 import ORC11.Replay
 import ORC11.Mixed
 import ORC11.IMM
+import ORC11.Closure
+import ORC11.RC11Dec

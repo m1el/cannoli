@@ -21,3 +21,11 @@ import ORC11
 #print axioms Mempipe.rc11_safe
 #print axioms ORC11.Mixed.mixed_orc11_safe
 #print axioms ORC11.Mixed.mixed_rc11_racy
+#print axioms ORC11.IMM.wf_toIMM
+#print axioms ORC11.IMM.consistent_iff
+#print axioms ORC11.IMM.consistent_of_rc11
+#print axioms ORC11.IMM.Counterexample.consistent_not_imm
+#print axioms ORC11.RC11.Exec.consistent_iff
+#print axioms ORC11.RC11.Exec.racy_iff
+#print axioms ORC11.RC11.Exec.decConsistent
+#print axioms ORC11.RC11.Exec.decRacy
