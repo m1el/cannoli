@@ -799,6 +799,47 @@ theorem addRead_ids (𝓝 : View Loc) (l l' : Loc) (r x : ℕ) (b : Prop) [Decid
   · subst hl; split_ifs at h <;> simp at h <;> tauto
   · split_ifs at h <;> simp [hl] at h <;> tauto
 
+/-- What a thread has seen, after its release write or update `k`, the
+message of `k` may carry. -/
+theorem Exec.seen_to_msg {k : ℕ} (hk : k < G.n) (hrh : G.RelHead k k) {x : Ev Loc}
+    (hx : G.Seen (G.tid k) (k + 1) x) : G.MsgSeen k x := by
+  obtain ⟨hxw, h | ⟨e, he, hte, hh⟩⟩ := hx
+  · exact ⟨hxw, Or.inl h⟩
+  have hek : G.hbS (.ev e) (.ev k) := by
+    rcases Nat.lt_or_ge e k with h | h
+    · exact .single (hb_of_tid h hk hte)
+    · have : e = k := by omega
+      subst this; exact .refl
+  rcases hh with hh | ⟨r, hr, hh⟩
+  · exact ⟨hxw, Or.inr (Or.inr ⟨k, hrh, Or.inl (hbS_trans hh hek)⟩)⟩
+  · exact ⟨hxw, Or.inr (Or.inr ⟨k, hrh, Or.inr ⟨r, hr, hbS_trans hh hek⟩⟩)⟩
+
+theorem Exec.seenNR_to_msg {k : ℕ} (hk : k < G.n) (hrh : G.RelHead k k) {r : ℕ}
+    (hx : G.SeenNR (G.tid k) (k + 1) r) : G.MsgNR k r := by
+  obtain ⟨h1, h2, h3, e, he, hte, hh⟩ := hx
+  have hek : G.hbS (.ev e) (.ev k) := by
+    rcases Nat.lt_or_ge e k with h | h
+    · exact .single (hb_of_tid h hk hte)
+    · have : e = k := by omega
+      subst this; exact .refl
+  exact ⟨h1, h2, h3, k, hrh, hbS_trans hh hek⟩
+
+/-- The thread's view after a write stays bounded. -/
+theorem Exec.cur_write_bounded {k : ℕ} (hk : k < G.n) (hkw : (G.lab k).IsWrite)
+    {V : View Loc} (hV : G.Bounded V (G.Seen (G.tid k) (k + 1)) (G.SeenNR (G.tid k) (k + 1)))
+    (o : MemOrder) : G.Bounded (V ⊔ writeView o (G.lab k).loc (G.ts k))
+      (G.Seen (G.tid k) (k + 1)) (G.SeenNR (G.tid k) (k + 1)) :=
+  hV.sup (Bounded.single (fun l => G.seen_init _ _ l)
+    ⟨(show G.IsWrite (.ev k) from ⟨hk, hkw⟩), Or.inr ⟨k, by omega, rfl, Or.inl .refl⟩⟩ rfl
+    (by split_ifs <;> simp [Exec.tsE])
+    (fun r hr => by split_ifs at hr <;> simp at hr))
+
+theorem Exec.writeView_msg_bounded {k : ℕ} (hk : k < G.n) (hkw : (G.lab k).IsWrite)
+    (o : MemOrder) : G.Bounded (writeView o (G.lab k).loc (G.ts k)) (G.MsgSeen k) (G.MsgNR k) :=
+  Bounded.single (fun l => G.msgSeen_init _ l)
+    ⟨(show G.IsWrite (.ev k) from ⟨hk, hkw⟩), Or.inr (Or.inl rfl)⟩ rfl
+    (by split_ifs <;> simp [Exec.tsE]) (fun r hr => by split_ifs at hr <;> simp at hr)
+
 section Events
 
 variable (hc : G.Consistent)
@@ -880,6 +921,114 @@ theorem Exec.sim_read {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S 
     rcases addRead_ids _ _ _ _ _ _ hr' with h | h
     · omega
     · have := hs.ids l' r h; omega
+
+/-- A write's message is new in memory: its rank is free. -/
+theorem Exec.fresh_rank {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G k pre c) (hk : k < G.n) (hkw : (G.lab k).IsWrite) :
+    ∀ m ∈ c.mem (G.lab k).loc, m.time ≠ G.ts k := by
+  have hwf := hc.wf
+  intro m hm hmt
+  rcases hs.memOld _ m hm with h | ⟨e, he, hew, hel, hmt', -⟩
+  · subst h; have := hwf.tsW k hk hkw; simp [initMsg] at hmt; omega
+  · have := hwf.tsInj e (by omega) k hk hew hkw hel (by rw [← hmt', hmt])
+    omega
+
+/-- Replaying a write. -/
+theorem Exec.sim_write {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hr : Reachable prog s0 v0 c) (hs : Sim G k pre c) (hrf1 : G.RaceFree (k + 1))
+    (hk : k < G.n) (hnext : pre (G.tid k) ++ [Sum.inl k] <+: G.items (G.tid k))
+    {s' : S (G.tid k)}
+    (hstep : stepItem (prog (G.tid k)) G.lab (c.th (G.tid k)).1 (.inl k) = some s')
+    {l : Loc} {o : MemOrder} {v : Val} (hlab : G.lab k = .W l o v)
+    (hok : DrfPreWrite l c.na (c.th (G.tid k)).2 c.mem o) :
+    ∃ c', Step prog c c' ∧
+      Sim G (k + 1) (Function.update pre (G.tid k) (pre (G.tid k) ++ [.inl k])) c' := by
+  have hwf := hc.wf
+  have hp := stepItem_write_inv hstep hlab
+  have hkw : (G.lab k).IsWrite := by rw [hlab]; trivial
+  have hl : (G.lab k).loc = l := by rw [hlab]; rfl
+  have hfresh := G.fresh_rank hc hs hk hkw
+  rw [hl] at hfresh
+  have hlt : ((c.th (G.tid k)).2.cur l).w < G.ts k := by
+    obtain ⟨w', hw', hwl, hwt⟩ := (hs.cur (G.tid k)).1 l
+    exact hwt.trans_lt (G.seen_lt_write hc hk hkw hw' (by rw [hwl, hl]))
+  have hlall : ∃ m ∈ c.mem l, m.time ≤ G.ts k :=
+    ⟨initMsg v0 l, hs.memInit l, by simp [initMsg]; have := hwf.tsW k hk hkw; omega⟩
+  have hts := TStep.write_at (hr.wfInv.threadWf (G.tid k)) hp hok hfresh hlt hlall
+  have hold := (hs.cur (G.tid k)).mono (fun x hx => G.seen_mono (Nat.le_succ k) hx)
+    (fun r hr => G.seenNR_mono (Nat.le_succ k) hr)
+  refine ⟨_, .mk c (G.tid k) hts, hs.succ hnext hstep ?_ (by simpa [writeTView] using hs.rel _)
+    ?_ (fun l' => Memory.mem_add_of_mem (hs.memInit l')) ?_ ?_ ?_ ?_⟩
+  · have := G.cur_write_bounded hk hkw hold o; rw [hl] at this; exact this
+  · intro l' m' hm'
+    rcases Memory.mem_add.1 hm' with ⟨rfl, rfl⟩ | hm'
+    · refine Or.inr ⟨k, by omega, hkw, hl, rfl, by rw [hlab]; rfl, ?_⟩
+      unfold writeRw
+      split_ifs with h1 h2
+      · -- a release write carries the writer's view
+        have hrh : G.RelHead k k := ⟨⟨hk, by rw [hlab]; exact h2⟩,
+          rs_refl hk hkw (by rw [hlab]; exact h1)⟩
+        simp only [Option.getD_some]
+        refine (((hold.mono (fun x hx => G.seen_to_msg hk hrh hx)
+          (fun r hr => G.seenNR_to_msg hk hrh hr)).sup ?_).sup ?_).sup
+          (Bounded.bot (fun l => G.msgSeen_init _ l))
+        · have := G.writeView_msg_bounded hk hkw o; rw [hl] at this; exact this
+        · rw [hs.rel]; exact Bounded.bot (fun l => G.msgSeen_init _ l)
+      · simp only [Option.getD_some]
+        refine ((?_ : G.Bounded _ _ _).sup ?_).sup (Bounded.bot (fun l => G.msgSeen_init _ l))
+        · have := G.writeView_msg_bounded hk hkw o; rw [hl] at this; exact this
+        · rw [hs.rel]; exact Bounded.bot (fun l => G.msgSeen_init _ l)
+      · exact Bounded.bot (fun l => G.msgSeen_init _ l)
+    · rcases hs.memOld l' m' hm' with h | ⟨e, he, h⟩
+      · exact Or.inl h
+      · exact Or.inr ⟨e, by omega, h⟩
+  · intro e he hew
+    rcases Nat.lt_or_ge e k with h | h
+    · obtain ⟨m, hm, hmt⟩ := hs.memNew e h hew
+      exact ⟨m, Memory.mem_add_of_mem hm, hmt⟩
+    · have : e = k := by omega
+      subst this; rw [hl]; exact ⟨_, Memory.mem_add.2 (Or.inl ⟨rfl, rfl⟩), rfl⟩
+  · intro e he hew hena
+    split_ifs with ho
+    · -- an atomic write leaves the non-atomic write time alone
+      rcases Nat.lt_or_ge e k with h | h
+      · have := hs.naW e h hew hena
+        by_cases hel : (G.lab e).loc = l
+        · rw [hel] at this ⊢; simpa using this
+        · simpa [hel] using this
+      · have : e = k := by omega
+        subst this; rw [hlab] at hena; simp [Label.IsNA] at hena; subst hena
+        exact absurd ho (by decide)
+    · by_cases hel : (G.lab e).loc = l
+      · rw [hel]; simp only [setWriteTime_self]
+        rcases Nat.lt_or_ge e k with h | h
+        · -- an earlier non-atomic write of `l` happens before `k`
+          rcases G.hb_related hrf1 (by omega : e < k + 1) (by omega : k < k + 1) (by omega)
+            (by omega) (by rw [hel, hl]) (Or.inl hew) (Or.inl hena) with h1 | h1
+          · have := coh_hb_mo hc h1
+            by_contra hlt'
+            exact this ⟨(show G.IsWrite (.ev k) from ⟨hk, hkw⟩),
+              (show G.IsWrite (.ev e) from ⟨by omega, hew⟩),
+              (show (G.lab k).loc = (G.lab e).loc by rw [hel, hl]),
+              (show G.ts k < G.ts e by omega)⟩
+          · exact absurd (hb_lt hwf h1) (by omega)
+        · have : e = k := by omega
+          subst this; exact le_rfl
+      · simp only [setWriteTime_ne _ _ hel]
+        rcases Nat.lt_or_ge e k with h | h
+        · exact hs.naW e h hew hena
+        · have : e = k := by omega
+          subst this; exact absurd hl hel
+  · intro e he her hena
+    rcases Nat.lt_or_ge e k with h | h
+    · have := hs.naR e h her hena
+      split_ifs <;> by_cases hel : (G.lab e).loc = l <;> simp_all
+    · have : e = k := by omega
+      subst this; rw [hlab] at her; exact absurd her id
+  · intro l' r hr'
+    have : r ∈ (c.na l').nr ∨ r ∈ (c.na l').ar := by
+      split_ifs at hr' <;> by_cases hl' : l' = l <;> simp_all
+    have := hs.ids l' r this; omega
 
 end Events
 
