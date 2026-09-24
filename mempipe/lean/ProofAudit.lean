@@ -15,3 +15,6 @@ import Mempipe
 #print axioms Mempipe.weakSeqLd_racy
 #print axioms Mempipe.weakRelSt_racy
 #print axioms Mempipe.weakAllocLd_racy
+#print axioms ORC11.RC11.Exec.replay
+#print axioms Mempipe.disciplined
+#print axioms Mempipe.rc11_safe

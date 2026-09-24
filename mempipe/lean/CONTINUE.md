@@ -48,7 +48,10 @@ Decisions and constraints:
 
 1. Done: ordering sanity check (`Mempipe/Weak.lean`, kernel-checked schedules
    on the interpreter `ORC11/Exec.lean`).
-2. Stage 2: RC11 ⇒ ORC11.
+2. Done: stage 2, RC11 ⇒ ORC11 for location-disciplined pools
+   (`ORC11/RC11.lean`, `ORC11/Replay.lean`, `Mempipe/RC11.lean`). Finding: the
+   appendix's Theorem 1 fails for mixed-mode locations (Lemma 7 case (2)(b));
+   a checked counterexample is `ORC11/Mixed.lean` (written by subagent 2 of 3).
 3. Optional herdtools7 cross-check (the interpreter `run?` can drive an
    exhaustive explorer for small parameters).
 
