@@ -134,6 +134,42 @@ theorem runItems_disc {A : Loc → Prop} (hd : ∀ s, (p s).Disc A) :
     · exact stepItem_disc hd h1
     · exact runItems_disc hd h2 e he
 
+theorem stepItem_read_inv {s s' : T} {e : ℕ} {l : Loc} {o : MemOrder} {v : Option Val}
+    (h : stepItem p lab s (.inl e) = some s') (hl : lab e = .R l o v) :
+    ∃ k, p s = .read l o k ∧ s' = k v := by
+  simp only [stepItem, hl] at h
+  cases hp : p s <;> rw [hp] at h <;> simp only at h
+  · split_ifs at h with hh
+    obtain ⟨rfl, rfl⟩ := hh; cases h; exact ⟨_, rfl, rfl⟩
+  all_goals cases h
+
+theorem stepItem_write_inv {s s' : T} {e : ℕ} {l : Loc} {o : MemOrder} {v : Val}
+    (h : stepItem p lab s (.inl e) = some s') (hl : lab e = .W l o v) :
+    p s = .write l o v s' := by
+  simp only [stepItem, hl] at h
+  cases hp : p s <;> rw [hp] at h <;> simp only at h
+  case write =>
+    split_ifs at h with hh
+    obtain ⟨rfl, rfl, rfl⟩ := hh; cases h; rfl
+  all_goals cases h
+
+theorem stepItem_update_inv {s s' : T} {e : ℕ} {l : Loc} {or ow : MemOrder} {vr vw : Val}
+    (h : stepItem p lab s (.inl e) = some s') (hl : lab e = .U l or ow vr vw) :
+    ∃ f k, p s = .update l or ow f k ∧ vw = f vr ∧ s' = k vr := by
+  simp only [stepItem, hl] at h
+  cases hp : p s <;> rw [hp] at h <;> simp only at h
+  case update =>
+    split_ifs at h with hh
+    obtain ⟨rfl, rfl, rfl, rfl⟩ := hh; cases h; exact ⟨_, _, rfl, rfl, rfl⟩
+  all_goals cases h
+
+theorem stepItem_choose_inv {s s' : T} {b : Bool}
+    (h : stepItem p lab s (.inr b) = some s') : ∃ k, p s = .choose k ∧ s' = k b := by
+  simp only [stepItem] at h
+  cases hp : p s <;> rw [hp] at h <;> simp only at h
+  case choose => cases h; exact ⟨_, rfl, rfl⟩
+  all_goals cases h
+
 /-- Splitting a list of items at its first event. -/
 theorem split_first_event : ∀ {xs : List Item} {e : ℕ} {ys : List ℕ},
     xs.filterMap Sum.getLeft? = e :: ys →
@@ -552,6 +588,300 @@ theorem Exec.raceFree_succ {k : ℕ} {pre : (i : ι) → List Item} {c : Config 
     exact hr.1.2.2.1 (h1.trans h2.symm)
 
 end Races
+
+/-! ## Replaying one event: helpers -/
+
+section Helpers
+
+variable (G) in
+/-- The source of read `k`. -/
+def Exec.src (k : ℕ) : Ev Loc :=
+  match G.rf k with
+  | none => .init (G.lab k).loc
+  | some w => .ev w
+
+theorem Exec.rfE_src_self {k : ℕ} (hk : k < G.n) (hr : (G.lab k).IsRead) :
+    G.rfE (G.src k) (.ev k) := by
+  refine ⟨hk, hr, ?_⟩
+  unfold Exec.src; cases G.rf k <;> rfl
+
+theorem Exec.hb_of_seen_pred {k : ℕ} (hk : k < G.n) {e : ℕ} (he : e < k)
+    (hte : G.tid e = G.tid k) {x : Ev Loc} (h : G.hbS x (.ev e)) : G.hb x (.ev k) :=
+  hbS_hb h (hb_of_tid he hk hte)
+
+/-- What `k`'s thread has seen, it has seen strictly before `k`. -/
+theorem Exec.seen_before {k : ℕ} (hk : k < G.n) {w : Ev Loc} (hw : G.Seen (G.tid k) k w)
+    (hni : ∀ l, w ≠ .init l) : G.hb w (.ev k) ∨ ∃ r, G.rfE w r ∧ G.hb r (.ev k) := by
+  obtain ⟨-, ⟨l, rfl⟩ | ⟨e, he, hte, h | ⟨r, hr, h⟩⟩⟩ := hw
+  · exact absurd rfl (hni l)
+  · exact Or.inl (G.hb_of_seen_pred hk he hte h)
+  · exact Or.inr ⟨r, hr, G.hb_of_seen_pred hk he hte h⟩
+
+theorem Exec.seen_lt {k : ℕ} (hwf : G.WF) {a : ℕ} (hw : G.Seen (G.tid k) k (.ev a)) :
+    a < k := by
+  obtain ⟨-, ⟨l, h⟩ | ⟨e, he, -, h | ⟨r, hr, h⟩⟩⟩ := hw
+  · cases h
+  · have := hbS_lt hwf h; omega
+  · obtain ⟨y, rfl, -, -⟩ := rfE_tgt hr
+    have := (rfE_src hwf hr).2.2 a rfl
+    have := hbS_lt hwf h; omega
+
+variable (hc : G.Consistent)
+include hc
+
+/-- A read reads a write at least as late as anything its thread has seen at
+that location. -/
+theorem Exec.seen_le_src {k : ℕ} (hk : k < G.n) (hr : (G.lab k).IsRead) {w : Ev Loc}
+    (hw : G.Seen (G.tid k) k w) (hwl : G.loc w = (G.lab k).loc) :
+    G.tsE w ≤ G.tsE (G.src k) := by
+  have hwf := hc.wf
+  have hrf := G.rfE_src_self hk hr
+  by_cases hi : ∃ l, w = .init l
+  · obtain ⟨l, rfl⟩ := hi
+    unfold Exec.src; cases hs : G.rf k with
+    | none => simp [Exec.tsE]
+    | some a =>
+      have := (hwf.rfSrc k hk hr); rw [hs] at this
+      have := hwf.tsW a (by omega) this.2.1
+      simp [Exec.tsE]; omega
+  · push Not at hi
+    have := coh_read hc hrf (G.seen_before hk hw hi)
+    by_contra hlt
+    exact this ⟨(rfE_src hwf hrf).1, hw.1,
+      by rw [hwl, (rfE_src hwf hrf).2.1], by omega⟩
+
+/-- A write goes after everything its thread has seen at that location. -/
+theorem Exec.seen_lt_write {k : ℕ} (hk : k < G.n) (hkw : (G.lab k).IsWrite) {w : Ev Loc}
+    (hw : G.Seen (G.tid k) k w) (hwl : G.loc w = (G.lab k).loc) :
+    G.tsE w < G.ts k := by
+  have hwf := hc.wf
+  have h2 := hwf.tsW k hk hkw
+  cases w with
+  | init l => simp [Exec.tsE]; omega
+  | ev a =>
+    have hak := G.seen_lt hwf hw
+    have := coh_write hc (G.seen_before hk hw (fun l h => by cases h))
+    rcases Nat.lt_or_ge (G.ts a) (G.ts k) with h | h
+    · exact h
+    · exfalso
+      rcases Nat.lt_or_eq_of_le h with h | h
+      · exact this ⟨⟨hk, hkw⟩, hw.1, by rw [hwl]; rfl, h⟩
+      · exact absurd (hwf.tsInj a hw.1.1 k hk hw.1.2 hkw hwl h.symm) (by omega)
+
+/-- The message a read `k` reads, in a simulated configuration. -/
+theorem Exec.msg_of_src {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G k pre c) (hk : k < G.n) (hr : (G.lab k).IsRead) :
+    ∃ m ∈ c.mem (G.lab k).loc, m.time = G.tsE (G.src k) ∧
+      (G.lab k).rval = some m.val ∧
+      (G.src k = .init (G.lab k).loc → m.view = none) ∧
+      (∀ w, G.src k = .ev w → G.Bounded (m.view.getD ⊥) (G.MsgSeen w) (G.MsgNR w)) := by
+  have hwf := hc.wf
+  have hsrc := hwf.rfSrc k hk hr
+  unfold Exec.src
+  cases hrf : G.rf k with
+  | none =>
+    rw [hrf] at hsrc
+    exact ⟨initMsg v0 _, hs.memInit _, rfl, hsrc, (fun _ => rfl), (fun w h => by cases h)⟩
+  | some w =>
+    rw [hrf] at hsrc
+    obtain ⟨hwk, hww, hwl, hval⟩ := hsrc
+    obtain ⟨m, hm, hmt⟩ := hs.memNew w hwk hww
+    rw [hwl] at hm
+    rcases hs.memOld _ m hm with hinit | ⟨e', he', he'w, he'l, hmt', hmv, hmb⟩
+    · subst hinit
+      have := hwf.tsW w (by omega) hww
+      simp [initMsg] at hmt; omega
+    · have : e' = w := hwf.tsInj e' (by omega) w (by omega) he'w hww (by rw [he'l, hwl])
+        (by rw [← hmt', hmt])
+      subst this
+      exact ⟨m, hm, hmt, by rw [hval, hmv], (fun h => by cases h),
+        (fun w' h => by cases h; exact hmb)⟩
+
+/-- What an acquire read of `k`'s source gives: things `k`'s thread has now
+seen. -/
+theorem Exec.acq_bounded {k : ℕ} (hk : k < G.n) (hr : (G.lab k).IsRead)
+    (hacq : (G.lab k).AcqR) {m : Msg Loc Val}
+    (hinit : G.src k = .init (G.lab k).loc → m.view = none)
+    (hb : ∀ w, G.src k = .ev w → G.Bounded (m.view.getD ⊥) (G.MsgSeen w) (G.MsgNR w)) :
+    G.Bounded (m.view.getD ⊥) (G.Seen (G.tid k) (k + 1)) (G.SeenNR (G.tid k) (k + 1)) := by
+  have hwf := hc.wf
+  have hrf := G.rfE_src_self hk hr
+  cases hsrc : G.src k with
+  | init l =>
+    have hl : l = (G.lab k).loc := by unfold Exec.src at hsrc; split at hsrc <;> cases hsrc; rfl
+    subst hl
+    rw [hinit hsrc]; exact Bounded.bot (fun l => G.seen_init _ _ l)
+  | ev w =>
+    rw [hsrc] at hrf
+    -- a release sequence head of `w` synchronizes with `k`
+    have hsw : ∀ h, G.RelHead h w → G.hb (.ev h) (.ev k) :=
+      fun h ⟨hrel, hrs⟩ => hb_of_sw ⟨hrel, .ev w, hrs, hrf, hk, hacq⟩
+    refine (hb w hsrc).mono (fun x hx => ?_) (fun r hr' => ?_)
+    · obtain ⟨hxw, h | h | ⟨h, hrh, hh | ⟨r, hr', hh⟩⟩⟩ := hx
+      · exact ⟨hxw, Or.inl h⟩
+      · subst h; exact ⟨hxw, Or.inr ⟨k, by omega, rfl, Or.inr ⟨.ev k, hrf, .refl⟩⟩⟩
+      · exact ⟨hxw, Or.inr ⟨k, by omega, rfl, Or.inl (.single (hbS_hb hh (hsw h hrh)))⟩⟩
+      · exact ⟨hxw, Or.inr ⟨k, by omega, rfl, Or.inr ⟨r, hr', .single (hbS_hb hh (hsw h hrh))⟩⟩⟩
+    · obtain ⟨h1, h2, h3, h, hrh, hh⟩ := hr'
+      exact ⟨h1, h2, h3, k, by omega, rfl, .single (hbS_hb hh (hsw h hrh))⟩
+
+end Helpers
+
+/-- Advancing the simulation by event `k`, given the new thread view,
+memory and race detector state of the step. -/
+theorem Sim.succ {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hs : Sim G k pre c) {s' : S (G.tid k)} {𝓥' : TView Loc} {M' : Memory Loc Val}
+    {𝓝' : View Loc}
+    (hnext : pre (G.tid k) ++ [Sum.inl k] <+: G.items (G.tid k))
+    (hstep : stepItem (prog (G.tid k)) G.lab (c.th (G.tid k)).1 (.inl k) = some s')
+    (hcur : G.Bounded 𝓥'.cur (G.Seen (G.tid k) (k + 1)) (G.SeenNR (G.tid k) (k + 1)))
+    (hrel : 𝓥'.rel = ⊥)
+    (hmemOld : ∀ l, ∀ m ∈ M' l, m = initMsg v0 l ∨ ∃ e < k + 1, (G.lab e).IsWrite ∧
+      (G.lab e).loc = l ∧ m.time = G.ts e ∧ m.val = (G.lab e).wval ∧
+      G.Bounded (m.view.getD ⊥) (G.MsgSeen e) (G.MsgNR e))
+    (hmemInit : ∀ l, initMsg v0 l ∈ M' l)
+    (hmemNew : ∀ e < k + 1, (G.lab e).IsWrite → ∃ m ∈ M' (G.lab e).loc, m.time = G.ts e)
+    (hnaW : ∀ e < k + 1, (G.lab e).IsWrite → (G.lab e).IsNA → G.ts e ≤ (𝓝' (G.lab e).loc).w)
+    (hnaR : ∀ e < k + 1, (G.lab e).IsRead → (G.lab e).IsNA → e ∈ (𝓝' (G.lab e).loc).nr)
+    (hids : ∀ l r, r ∈ (𝓝' l).nr ∨ r ∈ (𝓝' l).ar → r < k + 1) :
+    Sim G (k + 1) (Function.update pre (G.tid k) (pre (G.tid k) ++ [.inl k]))
+      ⟨Function.update c.th (G.tid k) (s', 𝓥'), M', 𝓝'⟩ where
+  prefix_ π := by
+    by_cases h : π = G.tid k
+    · subst h; simpa using hnext
+    · simpa [Function.update_of_ne h] using hs.prefix_ π
+  state π := by
+    by_cases h : π = G.tid k
+    · subst h; simpa using runItems_snoc (hs.state (G.tid k)) hstep
+    · simpa [Function.update_of_ne h] using hs.state π
+  evs π := by
+    by_cases h : π = G.tid k
+    · subst h
+      simp only [Function.update_self, List.filterMap_append, hs.evs, List.range_succ,
+        List.filter_append]
+      simp
+    · simp only [Function.update_of_ne h, hs.evs, List.range_succ, List.filter_append]
+      simp [Ne.symm h]
+  cur π := by
+    by_cases h : π = G.tid k
+    · subst h; simpa using hcur
+    · simpa [Function.update_of_ne h] using (hs.cur π).mono (fun x hx => G.seen_mono
+        (Nat.le_succ k) hx) (fun r hr => G.seenNR_mono (Nat.le_succ k) hr)
+  rel π := by
+    by_cases h : π = G.tid k
+    · subst h; simpa using hrel
+    · simpa [Function.update_of_ne h] using hs.rel π
+  memOld := hmemOld
+  memInit := hmemInit
+  memNew := hmemNew
+  naW := hnaW
+  naR := hnaR
+  ids := hids
+
+/-! ## Replaying one event -/
+
+theorem MemOrder.eq_na_of {o : MemOrder} (h : ¬ MemOrder.rlx ≤ o) : o = .na := by
+  cases o <;> first | rfl | exact absurd (by decide) h
+
+theorem addRead_w (𝓝 : View Loc) (l l' : Loc) (r : ℕ) (b : Prop) [Decidable b] :
+    ((if b then addARead 𝓝 l r else addNRead 𝓝 l r) l').w = (𝓝 l').w := by
+  by_cases hl : l' = l <;> split_ifs <;> simp [hl]
+
+theorem addRead_nr (𝓝 : View Loc) (l l' : Loc) (r : ℕ) (b : Prop) [Decidable b] :
+    (𝓝 l').nr ⊆ ((if b then addARead 𝓝 l r else addNRead 𝓝 l r) l').nr := by
+  by_cases hl : l' = l <;> split_ifs <;> simp [hl, Finset.subset_insert]
+
+theorem addRead_ids (𝓝 : View Loc) (l l' : Loc) (r x : ℕ) (b : Prop) [Decidable b]
+    (h : x ∈ ((if b then addARead 𝓝 l r else addNRead 𝓝 l r) l').nr ∨
+      x ∈ ((if b then addARead 𝓝 l r else addNRead 𝓝 l r) l').ar) :
+    x = r ∨ x ∈ (𝓝 l').nr ∨ x ∈ (𝓝 l').ar := by
+  by_cases hl : l' = l
+  · subst hl; split_ifs at h <;> simp at h <;> tauto
+  · split_ifs at h <;> simp [hl] at h <;> tauto
+
+section Events
+
+variable (hc : G.Consistent)
+include hc
+
+/-- Replaying a read. -/
+theorem Exec.sim_read {k : ℕ} {pre : (i : ι) → List Item} {c : Config ι S Loc Val}
+    (hr : Reachable prog s0 v0 c) (hs : Sim G k pre c) (hk : k < G.n)
+    (hnext : pre (G.tid k) ++ [Sum.inl k] <+: G.items (G.tid k))
+    {s' : S (G.tid k)}
+    (hstep : stepItem (prog (G.tid k)) G.lab (c.th (G.tid k)).1 (.inl k) = some s')
+    {l : Loc} {o : MemOrder} {v : Option Val} (hlab : G.lab k = .R l o v)
+    (hok : DrfPreRead l c.na (c.th (G.tid k)).2 c.mem o) :
+    ∃ c', Step prog c c' ∧
+      Sim G (k + 1) (Function.update pre (G.tid k) (pre (G.tid k) ++ [.inl k])) c' := by
+  have hwf := hc.wf
+  obtain ⟨kk, hp, rfl⟩ := stepItem_read_inv hstep hlab
+  have hread : (G.lab k).IsRead := by rw [hlab]; trivial
+  have hl : (G.lab k).loc = l := by rw [hlab]; rfl
+  obtain ⟨m, hm, hmt, hmv, hminit, hmb⟩ := G.msg_of_src hc hs hk hread
+  rw [hl] at hm
+  have hv : m.val = v := by rw [hlab] at hmv; simp [Label.rval] at hmv; exact hmv.symm
+  have hrf := G.rfE_src_self hk hread
+  have hsl : G.loc (G.src k) = l := by rw [(rfE_src hwf hrf).2.1, hl]
+  have hle : ((c.th (G.tid k)).2.cur l).w ≤ m.time := by
+    obtain ⟨w', hw', hwl, hwt⟩ := (hs.cur (G.tid k)).1 l
+    rw [hmt]; exact hwt.trans (G.seen_le_src hc hk hread hw' (by rw [hwl, hl]))
+  have htr : k ∉ (c.na l).ar ∧ k ∉ (c.na l).nr :=
+    ⟨fun h => absurd (hs.ids l k (Or.inr h)) (lt_irrefl k),
+      fun h => absurd (hs.ids l k (Or.inl h)) (lt_irrefl k)⟩
+  have hts := TStep.read_at hr.wfInv.memWf hp hok hm hle htr
+  rw [hv] at hts
+  refine ⟨_, .mk c (G.tid k) hts, hs.succ hnext hstep ?_ (by simpa [readTView] using hs.rel _)
+    ?_ hs.memInit ?_ ?_ ?_ ?_⟩
+  · -- the thread's new view
+    have hsrcSeen : G.Seen (G.tid k) (k + 1) (G.src k) :=
+      ⟨(rfE_src hwf hrf).1, Or.inr ⟨k, by omega, rfl, Or.inr ⟨.ev k, hrf, .refl⟩⟩⟩
+    have hold := (hs.cur (G.tid k)).mono (fun x hx => G.seen_mono (Nat.le_succ k) hx)
+      (fun r hr => G.seenNR_mono (Nat.le_succ k) hr)
+    have hVr : G.Bounded (readView o l m.time k) (G.Seen (G.tid k) (k + 1))
+        (G.SeenNR (G.tid k) (k + 1)) := by
+      refine Bounded.single (fun l => G.seen_init _ _ l) hsrcSeen hsl
+        (by split_ifs <;> simp [hmt]) ?_
+      intro r hr'
+      split_ifs at hr' with ho
+      · simp at hr'
+      · simp at hr'; rw [hr']
+        refine ⟨hk, hread, ?_, k, by omega, rfl, .refl⟩
+        rw [hlab]; exact MemOrder.eq_na_of ho
+    unfold readTView; dsimp only
+    split_ifs with ha
+    · have hacq : (G.lab k).AcqR := by rw [hlab]; exact ha
+      exact (hold.sup hVr).sup (G.acq_bounded hc hk hread hacq hminit hmb)
+    · exact hold.sup hVr
+  · intro l' m' hm'
+    rcases hs.memOld l' m' hm' with h | ⟨e, he, h⟩
+    · exact Or.inl h
+    · exact Or.inr ⟨e, by omega, h⟩
+  · intro e he hew
+    rcases Nat.lt_or_ge e k with h | h
+    · exact hs.memNew e h hew
+    · have : e = k := by omega
+      subst this; rw [hlab] at hew; exact absurd hew id
+  · intro e he hew hena
+    rcases Nat.lt_or_ge e k with h | h
+    · rw [addRead_w]; exact hs.naW e h hew hena
+    · have : e = k := by omega
+      subst this; rw [hlab] at hew; exact absurd hew id
+  · intro e he her hena
+    rcases Nat.lt_or_ge e k with h | h
+    · exact addRead_nr _ _ _ _ _ (hs.naR e h her hena)
+    · have : e = k := by omega
+      subst this
+      rw [hl]
+      have ho : o = .na := by rw [hlab] at hena; exact hena
+      subst ho
+      simp
+  · intro l' r hr'
+    rcases addRead_ids _ _ _ _ _ _ hr' with h | h
+    · omega
+    · have := hs.ids l' r h; omega
+
+end Events
 
 end RC11
 
