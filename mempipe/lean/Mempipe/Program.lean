@@ -8,7 +8,7 @@ import ORC11.Program
 `RecvPipe` (`request_ticket`, `try_recv`).
 
 Parameters: `N` buffers, `M` messages to send; the `k`-th message has payload
-`pay k` and length `len k`. The chunk of a buffer is modeled as one
+`pay k` and length `ln k`. The chunk of a buffer is modeled as one
 non-atomic location holding the whole payload, which is coarser than bytes and
 so conservative for races. Values are integers: `false = 0`, `true = 1`,
 `NO_SEQ = -1` (standing for `u64::MAX`; sequence numbers never get there).
@@ -87,28 +87,28 @@ structure SState where
   log : List Entry
 
 /-- The sender. -/
-def sprog (N M : ℕ) (pay len : ℕ → ℤ) (σ : SState) : Instr Loc Val SState :=
+def sprog (N M : ℕ) (pay ln : ℕ → ℤ) (σ : SState) : Instr Loc Val SState :=
   match σ.pc with
   | .start k =>
       if k < M then .choose fun b => { σ with pc := .alloc k b 0 } else .halt
   | .alloc k b i =>
       .read (.own i) .acqrel fun
-        | some 0 => { σ with pc := .chunk k b i }
-        | some _ => { σ with pc := .alloc k b ((i + 1) % N) }
         | none => { σ with pc := .fault }
+        | some v => if v = 0 then { σ with pc := .chunk k b i }
+                    else { σ with pc := .alloc k b ((i + 1) % N) }
   | .chunk k b i => .write (.chunk i) .na (pay k) { σ with pc := .len k b i }
-  | .len k b i => .write (.len i) .rlx (len k) { σ with pc := .own k b i }
+  | .len k b i => .write (.len i) .rlx (ln k) { σ with pc := .own k b i }
   | .own k b i => .write (.own i) .rlx 1 { σ with pc := .fadd k b i }
   | .fadd k b i => .update .curSeq .rlx .rlx (· + 1) fun s => { σ with pc := .pub k b i s }
   | .pub k b i s =>
       .write (.cseq i) .acqrel s
         { pc := if b then .spin k i else .start (k + 1)
-          log := (s, pay k, len k) :: σ.log }
+          log := (s, pay k, ln k) :: σ.log }
   | .spin k i =>
       .read (.own i) .rlx fun
-        | some 0 => { σ with pc := .start (k + 1) }
-        | some _ => { σ with pc := .spin k i }
         | none => { σ with pc := .fault }
+        | some v => if v = 0 then { σ with pc := .start (k + 1) }
+                    else { σ with pc := .spin k i }
   | .fault => .fault
 
 /-! ## Receivers -/
@@ -144,22 +144,21 @@ def rprog (N : ℕ) (ρ : RState) : Instr Loc Val RState :=
   | .init => .update .tick .rlx .rlx (· + 1) fun t => { ρ with pc := .scan t 0 }
   | .scan t i =>
       .read (.cseq i) .acqrel fun
+        | none => { ρ with pc := .fault }
         | some s => if s = t then { ρ with pc := .own t i }
                     else { ρ with pc := .scan t ((i + 1) % N) }
-        | none => { ρ with pc := .fault }
   | .own t i =>
       .read (.own i) .rlx fun
-        | some 0 => { ρ with pc := .fault }
-        | some _ => { ρ with pc := .len t i }
         | none => { ρ with pc := .fault }
+        | some v => if v = 0 then { ρ with pc := .fault } else { ρ with pc := .len t i }
   | .len t i =>
       .read (.len i) .rlx fun
-        | some n => { ρ with pc := .chunk t i n }
         | none => { ρ with pc := .fault }
+        | some n => { ρ with pc := .chunk t i n }
   | .chunk t i n =>
       .read (.chunk i) .na fun
-        | some p => { ρ with pc := .cb t i n p }
         | none => { ρ with pc := .fault }
+        | some p => { ρ with pc := .cb t i n p }
   | .cb t i n p =>
       .choose fun ok =>
         if ok then { pc := .rel t i, log := (t, p, n) :: ρ.log }
@@ -181,8 +180,8 @@ abbrev LS {ρ : Type} : TId ρ → Type
   | .recv _ => RState
 
 /-- Programs. -/
-def prog {ρ : Type} (N M : ℕ) (pay len : ℕ → ℤ) : (i : TId ρ) → LS i → Instr Loc Val (LS i)
-  | .sender => sprog N M pay len
+def prog {ρ : Type} (N M : ℕ) (pay ln : ℕ → ℤ) : (i : TId ρ) → LS i → Instr Loc Val (LS i)
+  | .sender => sprog N M pay ln
   | .recv _ => rprog N
 
 /-- Initial local states. -/
@@ -193,7 +192,7 @@ def init0 {ρ : Type} : (i : TId ρ) → LS i
 abbrev Cfg (ρ : Type) := Config (TId ρ) LS Loc Val
 
 /-- Reachable configurations of the pipe. -/
-def Reach {ρ : Type} [DecidableEq ρ] (N M : ℕ) (pay len : ℕ → ℤ) (c : Cfg ρ) : Prop :=
-  Reachable (prog N M pay len) init0 initVal c
+def Reach {ρ : Type} [DecidableEq ρ] (N M : ℕ) (pay ln : ℕ → ℤ) (c : Cfg ρ) : Prop :=
+  Reachable (prog N M pay ln) init0 initVal c
 
 end Mempipe
